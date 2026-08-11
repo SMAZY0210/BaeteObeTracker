@@ -46,6 +46,7 @@ const Api = {
   getDepartments()                    { return this.get('/admin/departments'); },
   createDepartment(d)                 { return this.post('/admin/departments', d); },
   updateDepartment(id, d)             { return this.put('/admin/departments/' + id, d); },
+  deleteDepartment(id)                { return this.delete('/admin/departments/' + id); },
   getPrograms()                       { return this.get('/admin/programs'); },
   createProgram(d)                    { return this.post('/admin/programs', d); },
   getSessions()                       { return this.get('/admin/sessions'); },

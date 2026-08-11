@@ -32,11 +32,52 @@ const updateFaculty = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// Soft delete: deletedAt is stamped and isActive goes false, the row stays.
+// Attainment data has to be answerable years later, and a hard delete of a
+// faculty would orphan every department, course and mark underneath it.
 const deleteFaculty = async (req, res, next) => {
   try {
     const { id } = req.params;
-    await prisma.faculty.update({ where: { id }, data: { deletedAt: new Date(), isActive: false } });
-    res.json({ status: 'success', data: { message: 'Faculty deactivated' } });
+
+    const faculty = await prisma.faculty.findFirst({
+      where: { id, institutionId: req.user.institutionId, deletedAt: null },
+      include: {
+        departments: {
+          where: { deletedAt: null },
+          select: { id: true, code: true, name: true },
+        },
+      },
+    });
+
+    if (!faculty) {
+      return res.status(404).json({ status: 'error', error: 'Faculty not found' });
+    }
+
+    if (faculty.departments.length) {
+      return res.status(409).json({
+        status: 'error',
+        error: `Cannot delete "${faculty.name}": ${faculty.departments.length} department(s) still belong to it.`,
+        blockers: { departments: faculty.departments },
+        hint: 'Move these departments to another faculty, or delete them first.',
+      });
+    }
+
+    await prisma.faculty.update({
+      where: { id },
+      data: { deletedAt: new Date(), isActive: false },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'FACULTY_DELETE',
+        entity: 'Faculty',
+        entityId: id,
+        meta: { code: faculty.code, name: faculty.name },
+      },
+    });
+
+    res.json({ status: 'success', data: { message: `Faculty "${faculty.name}" deleted` } });
   } catch (err) { next(err); }
 };
 
@@ -47,10 +88,30 @@ const getDepartments = async (req, res, next) => {
       where: { institutionId: req.user.institutionId, deletedAt: null },
       include: {
         faculty: { select: { id: true, name: true, code: true } },
-        _count: { select: { programs: true } },
+        _count: { select: { programs: true, sessions: true } },
       },
     });
-    res.json({ status: 'success', data: items });
+
+    // Students and teachers hang off a department indirectly, so _count cannot
+    // reach them: a student is a User whose Session belongs to the department,
+    // and a teacher is a User assigned to a Course in one of its Programs.
+    const withCounts = await Promise.all(
+      items.map(async (d) => {
+        const [students, teacherRows] = await Promise.all([
+          prisma.user.count({
+            where: { role: 'STUDENT', deletedAt: null, session: { departmentId: d.id } },
+          }),
+          prisma.courseAssignment.findMany({
+            where: { course: { deletedAt: null, program: { departmentId: d.id } } },
+            select: { facultyId: true },
+            distinct: ['facultyId'],
+          }),
+        ]);
+        return { ...d, _count: { ...d._count, students, teachers: teacherRows.length } };
+      })
+    );
+
+    res.json({ status: 'success', data: withCounts });
   } catch (err) { next(err); }
 };
 
@@ -79,8 +140,77 @@ const updateDepartment = async (req, res, next) => {
 const deleteDepartment = async (req, res, next) => {
   try {
     const { id } = req.params;
-    await prisma.department.update({ where: { id }, data: { deletedAt: new Date(), isActive: false } });
-    res.json({ status: 'success', data: { message: 'Department deactivated' } });
+
+    const dept = await prisma.department.findFirst({
+      where: { id, institutionId: req.user.institutionId, deletedAt: null },
+    });
+
+    if (!dept) {
+      return res.status(404).json({ status: 'error', error: 'Department not found' });
+    }
+
+    const [programs, sessions, students, courses, teacherRows] = await Promise.all([
+      prisma.program.findMany({
+        where: { departmentId: id, deletedAt: null },
+        select: { id: true, code: true, name: true },
+      }),
+      // Session has no deletedAt; it uses status. An ARCHIVED batch still holds
+      // the attainment record for a graduated cohort, so it counts as a blocker.
+      prisma.session.findMany({
+        where: { departmentId: id },
+        select: { id: true, name: true, status: true },
+      }),
+      prisma.user.count({
+        where: { role: 'STUDENT', deletedAt: null, session: { departmentId: id } },
+      }),
+      prisma.course.count({
+        where: { deletedAt: null, program: { departmentId: id } },
+      }),
+      prisma.courseAssignment.findMany({
+        where: { course: { deletedAt: null, program: { departmentId: id } } },
+        select: { facultyId: true },
+        distinct: ['facultyId'],
+      }),
+    ]);
+
+    const blockers = [];
+    if (programs.length)    blockers.push(`${programs.length} program(s)`);
+    if (courses)            blockers.push(`${courses} course(s)`);
+    if (students)           blockers.push(`${students} student(s)`);
+    if (teacherRows.length) blockers.push(`${teacherRows.length} assigned teacher(s)`);
+    if (sessions.length)    blockers.push(`${sessions.length} batch(es)`);
+
+    if (blockers.length) {
+      return res.status(409).json({
+        status: 'error',
+        error: `Cannot delete "${dept.name}": ${blockers.join(', ')} still attached.`,
+        blockers: {
+          programs,
+          sessions,
+          studentCount: students,
+          courseCount: courses,
+          teacherCount: teacherRows.length,
+        },
+        hint: 'Reassign or remove these first. Deleting a department with live courses would strand their marks and CO-PO mappings.',
+      });
+    }
+
+    await prisma.department.update({
+      where: { id },
+      data: { deletedAt: new Date(), isActive: false },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.id,
+        action: 'DEPARTMENT_DELETE',
+        entity: 'Department',
+        entityId: id,
+        meta: { code: dept.code, name: dept.name },
+      },
+    });
+
+    res.json({ status: 'success', data: { message: `Department "${dept.name}" deleted` } });
   } catch (err) { next(err); }
 };
 

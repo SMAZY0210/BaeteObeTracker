@@ -36,7 +36,8 @@ const AdminView={
         <td><span class="code-badge">${f.code}</span></td><td class="fw7">${f.name}</td>
         <td class="text-muted">${f._count?.departments??0}</td>
         <td><span class="badge ${f.isActive?'bg-green':'bg-gray'}">${f.isActive?'Active':'Inactive'}</span></td>
-        <td class="td-r"><button class="btn btn-secondary btn-xs" onclick="AdminView._editFaculty('${f.id}','${f.name.replace(/'/g,"\\'")}','${f.code}')">${ico('edit',13)} Edit</button></td>
+        <td class="td-r"><button class="btn btn-secondary btn-xs" onclick="AdminView._editFaculty('${f.id}','${f.name.replace(/'/g,"\\'")}','${f.code}')">${ico('edit',13)} Edit</button>
+        <button class="btn btn-danger btn-xs" onclick="AdminView._delFaculty('${f.id}','${f.name.replace(/'/g,"\\'")}',${f._count?.departments??0})">${ico('trash',13)} Delete</button></td>
       </tr>`).join(''):tdEmpty('No faculties yet',5);
     }catch(e){document.getElementById('ftb').innerHTML=tdEmpty(e.message,5)}
   },
@@ -49,19 +50,49 @@ const AdminView={
   async _updFaculty(id){const name=document.getElementById('mf-name').value.trim(),code=document.getElementById('mf-code').value.trim();
     try{await Api.updateFaculty(id,{name,code});toast('Updated');closeModal();this._faculties()}catch(e){toast(e.message,'err')}},
 
+  // ── Faculty / Department deletion ──────────────────────────
+  // Compact "what is inside this department" cell. Empty departments say so,
+  // which is the signal that Delete will actually go through.
+  _deptContents(d){
+    const c=d._count||{},parts=[];
+    if(c.programs) parts.push(`${c.programs} prog`);
+    if(c.sessions) parts.push(`${c.sessions} batch`);
+    if(c.students) parts.push(`${c.students} student`);
+    if(c.teachers) parts.push(`${c.teachers} teacher`);
+    return parts.length?parts.join(' \u00b7 '):'<span class="text-muted">empty</span>';
+  },
+
+  async _delFaculty(id,name,deptCount){
+    if(deptCount>0) return toast(`Cannot delete "${name}": ${deptCount} department(s) still belong to it. Move or delete them first.`,'err');
+    if(!confirm(`Delete faculty "${name}"?\n\nIt will be marked inactive and hidden, not erased.`)) return;
+    try{ await Api.deleteFaculty(id); toast('Faculty deleted'); this._faculties(); }
+    catch(e){ toast(e.message,'err'); }
+  },
+
+  async _delDept(id,name){
+    // No client-side count gate here on purpose. The server counts students and
+    // teachers through joins the list endpoint cannot cheaply keep fresh, so it
+    // is the authority. The Contents column is a hint, not the gate.
+    if(!confirm(`Delete department "${name}"?\n\nBlocked if any programs, batches, courses, students or teachers are still attached. It will be marked inactive, not erased.`)) return;
+    try{ await Api.deleteDepartment(id); toast('Department deleted'); this._depts(); this._faculties(); }
+    catch(e){ toast(e.message,'err'); }
+  },
+
   async _depts(){
     const el=document.getElementById('td');
     el.innerHTML=`<div class="flex-between mb3"><span class="sec-title">Departments</span><button class="btn btn-primary btn-sm" onclick="AdminView._addDept()">${ico('plus')} Add</button></div>
-      <div class="tbl-wrap"><table><thead><tr><th>Code</th><th>Name</th><th>Faculty</th><th>Status</th><th class="td-r">Actions</th></tr></thead><tbody id="dtb">${tdLoad(5)}</tbody></table></div>`;
+      <div class="tbl-wrap"><table><thead><tr><th>Code</th><th>Name</th><th>Faculty</th><th>Contents</th><th>Status</th><th class="td-r">Actions</th></tr></thead><tbody id="dtb">${tdLoad(6)}</tbody></table></div>`;
     try{
       const l=await Api.getDepartments();
       document.getElementById('dtb').innerHTML=l.length?l.map(d=>`<tr>
         <td><span class="code-badge">${d.code}</span></td><td class="fw7">${d.name}</td>
         <td class="text-muted">${d.faculty?.name||'-'}</td>
+        <td class="text-muted">${AdminView._deptContents(d)}</td>
         <td><span class="badge ${d.isActive?'bg-green':'bg-gray'}">${d.isActive?'Active':'Inactive'}</span></td>
-        <td class="td-r"><button class="btn btn-secondary btn-xs" onclick="AdminView._editDept('${d.id}','${d.name.replace(/'/g,"\\'")}','${d.code}','${d.facultyId||''}')">${ico('edit',13)} Edit</button></td>
-      </tr>`).join(''):tdEmpty('No departments yet',5);
-    }catch(e){document.getElementById('dtb').innerHTML=tdEmpty(e.message,5)}
+        <td class="td-r"><button class="btn btn-secondary btn-xs" onclick="AdminView._editDept('${d.id}','${d.name.replace(/'/g,"\\'")}','${d.code}','${d.facultyId||''}')">${ico('edit',13)} Edit</button>
+        <button class="btn btn-danger btn-xs" onclick="AdminView._delDept('${d.id}','${d.name.replace(/'/g,"\\'")}')">${ico('trash',13)} Delete</button></td>
+      </tr>`).join(''):tdEmpty('No departments yet',6);
+    }catch(e){document.getElementById('dtb').innerHTML=tdEmpty(e.message,6)}
   },
   _facSelect(sel){return `<div class="fg mb3"><label>Faculty</label><select id="md-faculty"><option value="">-- None --</option>${(AdminView._facCache||[]).map(f=>`<option value="${f.id}" ${f.id===sel?'selected':''}>${f.name}</option>`).join('')}</select></div>`},
   async _addDept(){
