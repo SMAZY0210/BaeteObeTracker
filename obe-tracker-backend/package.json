@@ -13,7 +13,9 @@
     "db:studio": "prisma studio",
     "build": "prisma generate",
     "postinstall": "prisma generate",
-    "vercel-build": "prisma generate"
+    "vercel-build": "prisma generate",
+    "test": "node --test test/",
+    "verify": "node scripts/verify-baete.js"
   },
   "keywords": [],
   "author": "",
