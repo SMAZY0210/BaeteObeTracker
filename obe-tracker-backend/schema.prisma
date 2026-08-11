@@ -1,0 +1,445 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  FACULTY
+  STUDENT
+}
+
+enum AssessmentType {
+  QUIZ
+  ASSIGNMENT
+  MID_TERM
+  FINAL
+  LAB
+  PROJECT
+  PRESENTATION
+  OTHER
+}
+
+enum CorrelationValue {
+  WEAK
+  MODERATE
+  STRONG
+}
+
+enum AttainmentLevel {
+  L0
+  L1
+  L2
+  L3
+}
+
+enum SessionStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+  ARCHIVED
+}
+
+enum BloomDomain {
+  COGNITIVE
+  AFFECTIVE
+  PSYCHOMOTOR
+}
+
+enum ProfileType {
+  FUNDAMENTAL
+  SOCIAL
+  THINKING
+  PERSONAL
+}
+
+model Institution {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  code       String   @unique
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  users                User[]
+  faculties            Faculty[]
+  departments          Department[]
+  sessions             Session[]
+  attainmentThresholds AttainmentThreshold[]
+}
+
+model User {
+  id              String    @id @default(cuid())
+  institutionId   String
+  email           String    @unique
+  passwordHash    String
+  role            Role
+  firstName       String
+  lastName        String
+  institutionalId String?
+  section         String?   // e.g. 'A', 'B'
+  sessionId       String?   // student's batch (department-scoped session); null = unassigned
+  isActive        Boolean   @default(true)
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  institution        Institution        @relation(fields: [institutionId], references: [id])
+  session            Session?           @relation(fields: [sessionId], references: [id])
+  otpTokens          OtpToken[]
+  jwtBlacklist       JwtBlacklist[]
+  auditLogs          AuditLog[]
+  facultyAssignments CourseAssignment[]
+  generatedReports   Report[]
+}
+
+model OtpToken {
+  id        String    @id @default(cuid())
+  userId    String
+  token     String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+}
+
+model JwtBlacklist {
+  id        String   @id @default(cuid())
+  userId    String
+  jti       String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([jti])
+}
+
+model Faculty {
+  id            String    @id @default(cuid())
+  institutionId String
+  name          String
+  code          String
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  institution Institution  @relation(fields: [institutionId], references: [id])
+  departments Department[]
+
+  @@unique([institutionId, code])
+}
+
+model Department {
+  id            String    @id @default(cuid())
+  institutionId String
+  facultyId     String?
+  name          String
+  code          String
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  faculty     Faculty?    @relation(fields: [facultyId], references: [id])
+  programs    Program[]
+  sessions    Session[]
+
+  @@unique([institutionId, code])
+}
+
+model Program {
+  id           String    @id @default(cuid())
+  departmentId String
+  name         String
+  code         String
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  department      Department       @relation(fields: [departmentId], references: [id])
+  courses         Course[]
+  programOutcomes ProgramOutcome[]
+  enrolments      Enrolment[]
+
+  @@unique([departmentId, code])
+}
+
+model Session {
+  id               String        @id @default(cuid())
+  institutionId    String
+  departmentId     String?
+  name             String
+  startDate        DateTime
+  endDate          DateTime?
+  status           SessionStatus @default(DRAFT)
+  frozenThresholds Json?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  department  Department? @relation(fields: [departmentId], references: [id])
+  students    User[]
+  courses     Course[]
+
+  @@index([institutionId])
+  @@index([departmentId])
+}
+
+model Course {
+  id          String    @id @default(cuid())
+  programId   String
+  sessionId   String
+  name        String
+  code        String
+  creditHours Int       @default(3)
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  program     Program            @relation(fields: [programId], references: [id])
+  session     Session            @relation(fields: [sessionId], references: [id])
+  assignments CourseAssignment[]
+  enrolments  Enrolment[]
+  outcomes    CourseOutcome[]
+  assessments Assessment[]
+  mappings    CoPoMapping[]
+  reports     Report[]
+
+  @@unique([sessionId, code])
+  @@index([programId])
+}
+
+model CourseAssignment {
+  id        String   @id @default(cuid())
+  courseId  String
+  facultyId String
+  createdAt DateTime @default(now())
+
+  course  Course @relation(fields: [courseId], references: [id])
+  faculty User   @relation(fields: [facultyId], references: [id])
+
+  @@unique([courseId, facultyId])
+}
+
+model Enrolment {
+  id        String   @id @default(cuid())
+  studentId String
+  courseId  String
+  programId String
+  createdAt DateTime @default(now())
+
+  course  Course  @relation(fields: [courseId], references: [id])
+  program Program @relation(fields: [programId], references: [id])
+
+  @@unique([studentId, courseId])
+  @@index([studentId])
+}
+
+model ProgramOutcome {
+  id          String    @id @default(cuid())
+  programId   String
+  code        String
+  title       String
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  program       Program        @relation(fields: [programId], references: [id])
+  mappings      CoPoMapping[]
+  poAttainments PoAttainment[]
+
+  @@unique([programId, code])
+}
+
+model CourseOutcome {
+  id          String    @id @default(cuid())
+  courseId    String
+  code        String
+  title       String
+  description String?
+  isActive    Boolean   @default(true)
+  bloomDomain BloomDomain?
+  bloomLevel  Int?
+  profileType ProfileType?
+  profileCode String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  course        Course         @relation(fields: [courseId], references: [id])
+  mappings      CoPoMapping[]
+  assessmentCOs AssessmentCO[]
+  coAttainments CoAttainment[]
+
+  @@unique([courseId, code])
+}
+
+model CoPoMapping {
+  id               String            @id @default(cuid())
+  courseId         String
+  courseOutcomeId  String
+  programOutcomeId String
+  correlation      CorrelationValue?
+  version          Int               @default(1)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  course         Course         @relation(fields: [courseId], references: [id])
+  courseOutcome  CourseOutcome  @relation(fields: [courseOutcomeId], references: [id])
+  programOutcome ProgramOutcome @relation(fields: [programOutcomeId], references: [id])
+
+  @@unique([courseId, courseOutcomeId, programOutcomeId])
+  @@index([courseId])
+}
+
+model Assessment {
+  id         String         @id @default(cuid())
+  courseId   String
+  type       AssessmentType
+  title      String
+  totalMarks Float
+  weight     Float
+  isActive   Boolean        @default(true)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  deletedAt  DateTime?
+
+  course        Course         @relation(fields: [courseId], references: [id])
+  assessmentCOs AssessmentCO[]
+  marks         Mark[]
+
+  @@index([courseId])
+}
+
+model AssessmentCO {
+  id              String @id @default(cuid())
+  assessmentId    String
+  courseOutcomeId String
+
+  assessment    Assessment    @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  courseOutcome CourseOutcome @relation(fields: [courseOutcomeId], references: [id])
+
+  @@unique([assessmentId, courseOutcomeId])
+}
+
+model Mark {
+  id            String   @id @default(cuid())
+  assessmentId  String
+  studentId     String
+  marksObtained Float
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id])
+
+  @@unique([assessmentId, studentId])
+  @@index([studentId])
+}
+
+model MarkAuditLog {
+  id           String   @id @default(cuid())
+  assessmentId String
+  studentId    String
+  changedById  String
+  beforeValue  Float?
+  afterValue   Float?
+  changedAt    DateTime @default(now())
+
+  @@index([assessmentId, studentId])
+}
+
+model AttainmentThreshold {
+  id            String   @id @default(cuid())
+  institutionId String
+  l3Min         Float    @default(70)
+  l2Min         Float    @default(60)
+  l1Min         Float    @default(50)
+  updatedAt     DateTime @updatedAt
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+
+  @@unique([institutionId])
+}
+
+model CoAttainment {
+  id              String          @id @default(cuid())
+  courseOutcomeId String
+  studentId       String
+  courseId        String
+  percentage      Float
+  level           AttainmentLevel
+  matrixVersion   Int
+  computedAt      DateTime        @default(now())
+
+  courseOutcome CourseOutcome @relation(fields: [courseOutcomeId], references: [id])
+
+  @@unique([courseOutcomeId, studentId])
+  @@index([courseId])
+  @@index([studentId])
+}
+
+model PoAttainment {
+  id               String          @id @default(cuid())
+  programOutcomeId String
+  studentId        String
+  courseId         String
+  percentage       Float
+  level            AttainmentLevel
+  matrixVersion    Int
+  computedAt       DateTime        @default(now())
+
+  programOutcome ProgramOutcome @relation(fields: [programOutcomeId], references: [id])
+
+  @@unique([programOutcomeId, studentId, courseId])
+  @@index([courseId])
+  @@index([studentId])
+}
+
+model Report {
+  id            String   @id @default(cuid())
+  courseId      String?
+  generatedById String
+  reportType    String
+  format        String
+  filePath      String
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+
+  course      Course? @relation(fields: [courseId], references: [id])
+  generatedBy User    @relation(fields: [generatedById], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  action    String
+  entity    String
+  entityId  String
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([entity, entityId])
+  @@index([userId])
+}
+

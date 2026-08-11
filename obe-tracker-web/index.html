@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>BUP OBE Tracker</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+CiAgPHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNiIgZmlsbD0iIzE2YTM0YSIvPgogIDx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBkb21pbmFudC1iYXNlbGluZT0iY2VudHJhbCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgCiAgICAgICAgZm9udC1mYW1pbHk9IkFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtd2VpZ2h0PSI4MDAiIGZvbnQtc2l6ZT0iMTMiIGZpbGw9IndoaXRlIj5PQkU8L3RleHQ+Cjwvc3ZnPg==">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="page-login" class="page active">
+  <div class="login-left">
+    <div class="login-brand">
+      <div class="brand-badge">OBE</div>
+      <h1>Outcome Based<br>Education Tracker</h1>
+      <p>Bangladesh University of Professionals</p>
+      <div class="brand-pills">
+        <span>Course Outcomes</span><span>CO–PO Mapping</span><span>Attainment</span>
+      </div>
+    </div>
+  </div>
+  <div class="login-right">
+    <div class="login-form">
+      <h2>Sign in</h2>
+      <p class="login-sub">Use your institutional credentials</p>
+      <div id="login-error" class="alert alert-error hidden"></div>
+      <div class="field-wrap">
+        <label>Email address</label>
+        <input type="text" id="login-email" placeholder="email or student ID" autocomplete="username">
+      </div>
+      <div class="field-wrap">
+        <label>Password</label>
+        <div class="field-suffix">
+          <input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password">
+          <button class="suffix-btn" type="button" onclick="togglePw()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+      </div>
+      <button class="btn-login" id="login-btn" onclick="doLogin()">Sign in →</button>
+      <a href="#" class="forgot-link" onclick="showForgot(event)">Forgot password?</a>
+    </div>
+  </div>
+</div>
+
+<!-- FORGOT -->
+<div id="page-forgot" class="page">
+  <div class="login-right" style="flex:1;justify-content:center">
+    <div class="login-form">
+      <button class="back-btn" onclick="showLogin()">← Back to sign in</button>
+      <h2 id="fh">Reset password</h2>
+      <p class="login-sub" id="fs">Enter your email to receive a one-time code.</p>
+      <div id="forgot-error" class="alert alert-error hidden"></div>
+      <div id="fstep1">
+        <div class="field-wrap"><label>Email</label><input type="email" id="forgot-email" placeholder="you@bup.edu.bd"></div>
+        <button class="btn-login" onclick="sendOtp()">Send OTP →</button>
+      </div>
+      <div id="fstep2" class="hidden">
+        <div class="field-wrap"><label>OTP Code</label><input type="text" id="forgot-otp" placeholder="000000" maxlength="6" style="letter-spacing:.25em;font-size:20px;text-align:center"></div>
+        <div class="field-wrap"><label>New password</label><input type="password" id="forgot-pw" placeholder="Min 8 characters"></div>
+        <div class="field-wrap"><label>Confirm password</label><input type="password" id="forgot-cpw" placeholder="Repeat password"></div>
+        <button class="btn-login" onclick="resetPw()">Reset password →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="page-app" class="page">
+  <div class="sb-backdrop" onclick="Mobile.closeNav()"></div>
+  <aside id="sidebar">
+    <div class="sb-top">
+      <div class="sb-brand">
+        <span class="sb-mark">OBE</span>
+        <span class="sb-name">Tracker</span>
+      </div>
+      <nav id="sb-nav"></nav>
+    </div>
+    <div class="sb-bottom">
+      <div id="sb-user-info"></div>
+      <button class="sb-signout" onclick="doLogout()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Sign out
+      </button>
+    </div>
+  </aside>
+  <main id="app-main">
+    <div class="app-topbar">
+      <button class="tb-burger" type="button" onclick="Mobile.toggleNav()" aria-label="Open menu">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <div class="tb-brand"><span class="sb-mark">OBE</span> Tracker</div>
+    </div>
+    <div id="view-root"></div>
+  </main>
+</div>
+
+<!-- TOAST -->
+<div id="toasts"></div>
+
+<!-- MODAL -->
+<div id="modal-overlay" class="hidden" onclick="closeModal(event)">
+  <div class="modal-box" onclick="event.stopPropagation()">
+    <div class="modal-hd">
+      <h3 id="modal-title"></h3>
+      <button class="modal-x" onclick="closeModal()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div id="modal-body"></div>
+    <div id="modal-ft" class="modal-ft hidden"></div>
+  </div>
+</div>
+
+<script src="js/api.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/views/admin.js"></script>
+<script src="js/views/faculty.js"></script>
+<script src="js/views/student.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

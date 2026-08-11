@@ -1,0 +1,1001 @@
+// BAETE OBE Tracker — schema
+// Target: BAETE Accreditation Criteria ACC-MAN-02 v3.0 (effective 01 Jul 2025)
+// SAR template: ACC-TMP-04-04 v3.0 (mandatory for all programs from 01 Jul 2026)
+//
+// Derived from the ObeTracker BUP schema. Changes from that version are marked
+// [NEW] or [CHANGED] with the criterion that forces them.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ENUMS
+// ══════════════════════════════════════════════════════════════════════
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  PROGRAM_HEAD // [NEW] owns PEOs, thresholds and CQI actions for a program
+  FACULTY
+  STUDENT
+}
+
+enum AssessmentType {
+  QUIZ
+  ASSIGNMENT
+  MID_TERM
+  FINAL
+  LAB
+  PROJECT
+  PRESENTATION
+  VIVA
+  DESIGN_PROJECT // capstone; the preferred vehicle for culminating PO evidence
+  INTERNSHIP
+  OTHER
+}
+
+// [NEW] ACC-MAN-02 v3.0 s.5.2.5 — PO attainment by graduation must be shown by
+// DIRECT methods. Surveys are CQI evidence and never the attainment figure.
+enum AssessMethod {
+  DIRECT
+  INDIRECT
+}
+
+enum CorrelationValue {
+  WEAK
+  MODERATE
+  STRONG
+}
+
+enum AttainmentLevel {
+  L0
+  L1
+  L2
+  L3
+}
+
+enum SessionStatus {
+  DRAFT
+  ACTIVE
+  CLOSED
+  ARCHIVED
+}
+
+enum BloomDomain {
+  COGNITIVE
+  AFFECTIVE
+  PSYCHOMOTOR
+}
+
+enum ComplexAttrKind {
+  PROBLEM // WP1..WP7
+  ACTIVITY // EA1..EA5
+}
+
+enum EvidenceKind {
+  LECTURE_PLAN
+  COURSE_OUTLINE
+  GRADING_POLICY
+  QUESTION_PAPER
+  SCRIPT_BEST
+  SCRIPT_AVERAGE
+  SCRIPT_WEAKEST
+  PROJECT_REPORT
+  RUBRIC
+  MINUTES
+  OTHER
+}
+
+enum CqiStatus {
+  OPEN
+  IN_PROGRESS
+  CLOSED
+  DEFERRED
+}
+
+enum CqiSource {
+  CO_SHORTFALL
+  PO_SHORTFALL
+  PEO_REVIEW
+  STUDENT_FEEDBACK
+  FACULTY_FEEDBACK
+  INDUSTRY_FEEDBACK
+  ALUMNI_SURVEY
+  EMPLOYER_SURVEY
+  BAETE_VISIT_FINDING
+  OTHER
+}
+
+enum SurveyKind {
+  ALUMNI // PEO attainment, graduates 3-5 years out (s.5.1.3)
+  EMPLOYER // PEO attainment, employers of graduates
+  EXIT // final-year students, indirect PO evidence
+  COURSE_END // per course, student feedback
+  INDUSTRY // curriculum relevance (s.5.4.1)
+}
+
+enum AccordLevel {
+  WASHINGTON // engineering degree; complex problems
+  SYDNEY // technologist; broadly-defined problems
+  DUBLIN // technician; well-defined problems
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// [NEW] ACCREDITATION FRAMEWORK LAYER
+// Makes the outcome vocabulary data rather than code. When BAETE ships v4 you
+// insert a row and migrate programs across instead of rewriting the seed.
+// ══════════════════════════════════════════════════════════════════════
+
+model AccreditationFramework {
+  id             String      @id @default(cuid())
+  code           String      @unique // "BAETE_V3"
+  name           String
+  manualRef      String // "ACC-MAN-02"
+  version        String // "3.0"
+  accord         AccordLevel @default(WASHINGTON)
+  sarTemplateRef String? // "ACC-TMP-04-04 v3.0"
+  effectiveFrom  DateTime
+  effectiveTill  DateTime?
+  isActive       Boolean     @default(true)
+  createdAt      DateTime    @default(now())
+
+  frameworkOutcomes  FrameworkOutcome[]
+  knowledgeProfiles  KnowledgeProfile[]
+  complexAttributes  ComplexAttribute[]
+  programSpecCriteria ProgramSpecificCriteria[]
+  programs           Program[]
+}
+
+// Canonical PO1..PO12 as published by BAETE. A program maps its own POs onto
+// these; s.5.2.1 requires program POs be significantly equivalent, and s.5.2
+// permits additional program-defined outcomes on top.
+model FrameworkOutcome {
+  id          String @id @default(cuid())
+  frameworkId String
+  code        String // PO1..PO12
+  title       String
+  statement   String @db.Text
+
+  framework       AccreditationFramework @relation(fields: [frameworkId], references: [id], onDelete: Cascade)
+  wkLinks         FrameworkOutcomeWk[]
+  programOutcomes ProgramOutcome[]
+
+  @@unique([frameworkId, code])
+}
+
+model KnowledgeProfile {
+  id          String @id @default(cuid())
+  frameworkId String
+  code        String // WK1..WK9  (v2.x used K1..K8 — not interchangeable)
+  attribute   String @db.Text
+
+  framework AccreditationFramework @relation(fields: [frameworkId], references: [id], onDelete: Cascade)
+  poLinks   FrameworkOutcomeWk[]
+  coLinks   CourseOutcomeWk[]
+
+  @@unique([frameworkId, code])
+}
+
+model FrameworkOutcomeWk {
+  frameworkOutcomeId String
+  knowledgeProfileId String
+
+  frameworkOutcome FrameworkOutcome @relation(fields: [frameworkOutcomeId], references: [id], onDelete: Cascade)
+  knowledgeProfile KnowledgeProfile @relation(fields: [knowledgeProfileId], references: [id], onDelete: Cascade)
+
+  @@id([frameworkOutcomeId, knowledgeProfileId])
+}
+
+model ComplexAttribute {
+  id          String          @id @default(cuid())
+  frameworkId String
+  code        String // WP1..WP7, EA1..EA5
+  kind        ComplexAttrKind
+  dimension   String
+  attribute   String          @db.Text
+  isMandatory Boolean         @default(false) // WP1 only
+
+  framework       AccreditationFramework  @relation(fields: [frameworkId], references: [id], onDelete: Cascade)
+  assessmentLinks AssessmentComplexAttr[]
+  courseLinks     CourseComplexAttr[]
+
+  @@unique([frameworkId, code])
+}
+
+model ProgramSpecificCriteria {
+  id            String   @id @default(cuid())
+  frameworkId   String
+  code          String // "CSE", "EEE_ECE"
+  section       String // "6.5"
+  name          String
+  requiredTopics String[] // text[] — checked off against the curriculum
+  note          String?  @db.Text
+
+  framework AccreditationFramework @relation(fields: [frameworkId], references: [id], onDelete: Cascade)
+  programs  Program[]
+
+  @@unique([frameworkId, code])
+}
+
+model Sdg {
+  id   String @id @default(cuid())
+  code String @unique // SDG1..SDG17
+  name String
+
+  courseLinks     CourseSdg[]
+  assessmentLinks AssessmentSdg[]
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ORGANISATION
+// ══════════════════════════════════════════════════════════════════════
+
+model Institution {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  code      String   @unique
+  visionStatement  String? @db.Text // [NEW] s.5.1.2 PEOs must align to these
+  missionStatement String? @db.Text
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users       User[]
+  faculties   Faculty[]
+  departments Department[]
+  sessions    Session[]
+}
+
+model User {
+  id              String    @id @default(cuid())
+  institutionId   String
+  email           String    @unique
+  passwordHash    String
+  role            Role
+  firstName       String
+  lastName        String
+  institutionalId String?
+  section         String?
+  sessionId       String?
+  isActive        Boolean   @default(true)
+  mustChangePassword Boolean @default(true) // [NEW] see MIGRATION.md, roll-number passwords
+  lastLoginAt     DateTime?
+  graduatedAt     DateTime? // [NEW] s.5.1.3 alumni surveys target 3-5 years post-graduation
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  institution        Institution        @relation(fields: [institutionId], references: [id])
+  session            Session?           @relation(fields: [sessionId], references: [id])
+  otpTokens          OtpToken[]
+  jwtBlacklist       JwtBlacklist[]
+  auditLogs          AuditLog[]
+  facultyAssignments CourseAssignment[]
+  generatedReports   Report[]
+  advisees           StudentAdvisor[]   @relation("advisor")
+  advisors           StudentAdvisor[]   @relation("student")
+
+  // [CHANGED] these were bare String columns with no FK in the original schema.
+  // Orphaned marks and attainment rows were possible and did occur.
+  enrolments        Enrolment[]
+  marks             Mark[]
+  coAttainments     CoAttainment[]
+  poAttainments     PoAttainment[]
+  surveyResponses   SurveyResponse[]
+  ownedCqiActions   CqiAction[]        @relation("cqiOwner")
+  uploadedEvidence  Evidence[]
+
+  @@index([institutionId])
+}
+
+model OtpToken {
+  id        String    @id @default(cuid())
+  userId    String
+  token     String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+}
+
+model JwtBlacklist {
+  id        String   @id @default(cuid())
+  userId    String
+  jti       String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([jti])
+}
+
+model Faculty {
+  id            String    @id @default(cuid())
+  institutionId String
+  name          String
+  code          String
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  institution Institution  @relation(fields: [institutionId], references: [id])
+  departments Department[]
+
+  @@unique([institutionId, code])
+}
+
+model Department {
+  id               String    @id @default(cuid())
+  institutionId    String
+  facultyId        String?
+  name             String
+  code             String
+  visionStatement  String?   @db.Text // [NEW] s.5.1.2
+  missionStatement String?   @db.Text
+  isActive         Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  faculty     Faculty?    @relation(fields: [facultyId], references: [id])
+  programs    Program[]
+  sessions    Session[]
+
+  @@unique([institutionId, code])
+}
+
+model Program {
+  id                        String    @id @default(cuid())
+  departmentId              String
+  frameworkId               String? // null = not pursuing accreditation
+  programSpecificCriteriaId String? // which ACC-MAN-03 section applies
+  name                      String
+  code                      String
+  degreeTitle               String? // "BSc in Information and Communication Engineering"
+  durationYears             Int       @default(4)
+  totalCreditHours          Int?
+  isActive                  Boolean   @default(true)
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+  deletedAt                 DateTime?
+
+  department       Department               @relation(fields: [departmentId], references: [id])
+  framework        AccreditationFramework?  @relation(fields: [frameworkId], references: [id])
+  specificCriteria ProgramSpecificCriteria? @relation(fields: [programSpecificCriteriaId], references: [id])
+  courses          Course[]
+  programOutcomes  ProgramOutcome[]
+  enrolments       Enrolment[]
+  peos             Peo[]
+  thresholdPolicies ThresholdPolicy[]
+  cohortAttainments CohortPoAttainment[]
+  cqiActions       CqiAction[]
+  surveys          Survey[]
+
+  @@unique([departmentId, code])
+}
+
+model Session {
+  id                String        @id @default(cuid())
+  institutionId     String
+  departmentId      String?
+  name              String
+  startDate         DateTime
+  endDate           DateTime?
+  expectedGraduation DateTime?    // [NEW] drives the by-graduation PO rollup
+  status            SessionStatus @default(DRAFT)
+  frozenThresholds  Json?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  institution       Institution          @relation(fields: [institutionId], references: [id])
+  department        Department?          @relation(fields: [departmentId], references: [id])
+  students          User[]
+  courses           Course[]
+  cohortAttainments CohortPoAttainment[]
+
+  @@index([institutionId])
+  @@index([departmentId])
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// [NEW] PEO LAYER — ACC-MAN-02 v3.0 s.5.1
+// The single biggest gap in the original schema. A SAR cannot be written
+// without it.
+// ══════════════════════════════════════════════════════════════════════
+
+model Peo {
+  id            String    @id @default(cuid())
+  programId     String
+  code          String // PEO1..PEOn
+  statement     String    @db.Text
+  rationale     String?   @db.Text // s.5.1.2 alignment to vision and mission
+  publishedUrl  String? // s.5.1.1 PEOs must be published
+  reviewCycleMonths Int   @default(36)
+  lastReviewedAt DateTime?
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  program    Program      @relation(fields: [programId], references: [id])
+  poMappings PeoPoMap[]
+  questions  SurveyQuestion[]
+  cqiActions CqiAction[]
+
+  @@unique([programId, code])
+}
+
+model PeoPoMap {
+  peoId            String
+  programOutcomeId String
+  correlation      CorrelationValue @default(MODERATE)
+
+  peo            Peo            @relation(fields: [peoId], references: [id], onDelete: Cascade)
+  programOutcome ProgramOutcome @relation(fields: [programOutcomeId], references: [id], onDelete: Cascade)
+
+  @@id([peoId, programOutcomeId])
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// [NEW] SURVEYS — indirect evidence for PEO attainment and CQI
+// ══════════════════════════════════════════════════════════════════════
+
+model Survey {
+  id          String     @id @default(cuid())
+  programId   String
+  kind        SurveyKind
+  title       String
+  cycleLabel  String // "2026 alumni cycle (2021-2023 graduates)"
+  opensAt     DateTime
+  closesAt    DateTime?
+  targetCohortFrom DateTime? // graduates between these dates (3-5 yr window)
+  targetCohortTo   DateTime?
+  createdAt   DateTime   @default(now())
+
+  program   Program          @relation(fields: [programId], references: [id])
+  questions SurveyQuestion[]
+  responses SurveyResponse[]
+
+  @@index([programId, kind])
+}
+
+model SurveyQuestion {
+  id        String  @id @default(cuid())
+  surveyId  String
+  peoId     String? // which PEO this question evidences
+  prompt    String  @db.Text
+  scaleMin  Int     @default(1)
+  scaleMax  Int     @default(5)
+  ordering  Int     @default(0)
+
+  survey  Survey           @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  peo     Peo?             @relation(fields: [peoId], references: [id])
+  answers SurveyAnswer[]
+}
+
+model SurveyResponse {
+  id           String   @id @default(cuid())
+  surveyId     String
+  respondentId String? // null for anonymous employer responses
+  respondentRole String? // "employer", "alumnus", "student"
+  organisation String?
+  submittedAt  DateTime @default(now())
+
+  survey     Survey         @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  respondent User?          @relation(fields: [respondentId], references: [id])
+  answers    SurveyAnswer[]
+
+  @@index([surveyId])
+}
+
+model SurveyAnswer {
+  id         String  @id @default(cuid())
+  responseId String
+  questionId String
+  score      Int?
+  comment    String? @db.Text
+
+  response SurveyResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+  question SurveyQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([responseId, questionId])
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// CURRICULUM
+// ══════════════════════════════════════════════════════════════════════
+
+model Course {
+  id          String    @id @default(cuid())
+  programId   String
+  sessionId   String
+  name        String
+  code        String
+  creditHours Int       @default(3)
+  isCapstone  Boolean   @default(false) // [NEW] preferred culminating PO evidence
+  lectureePlanUrl String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  program           Program              @relation(fields: [programId], references: [id])
+  session           Session              @relation(fields: [sessionId], references: [id])
+  assignments       CourseAssignment[]
+  enrolments        Enrolment[]
+  outcomes          CourseOutcome[]
+  assessments       Assessment[]
+  mappings          CoPoMapping[]
+  reports           Report[]
+  complexAttributes CourseComplexAttr[] // [NEW] s.5.3.6
+  sdgs              CourseSdg[] // [NEW] s.5.3.6
+  evidence          Evidence[]
+  coAttainments     CourseCoAttainment[]
+
+  @@unique([sessionId, code])
+  @@index([programId])
+}
+
+model CourseAssignment {
+  id        String   @id @default(cuid())
+  courseId  String
+  facultyId String
+  createdAt DateTime @default(now())
+
+  course  Course @relation(fields: [courseId], references: [id])
+  faculty User   @relation(fields: [facultyId], references: [id])
+
+  @@unique([courseId, facultyId])
+}
+
+// [NEW] s.5.6.3 — every student must be assigned an advisor
+model StudentAdvisor {
+  id        String    @id @default(cuid())
+  studentId String
+  advisorId String
+  fromDate  DateTime  @default(now())
+  toDate    DateTime?
+
+  student User @relation("student", fields: [studentId], references: [id])
+  advisor User @relation("advisor", fields: [advisorId], references: [id])
+
+  @@index([studentId])
+  @@index([advisorId])
+}
+
+model Enrolment {
+  id        String   @id @default(cuid())
+  studentId String
+  courseId  String
+  programId String
+  createdAt DateTime @default(now())
+
+  student User    @relation(fields: [studentId], references: [id]) // [CHANGED] now a real FK
+  course  Course  @relation(fields: [courseId], references: [id])
+  program Program @relation(fields: [programId], references: [id])
+
+  @@unique([studentId, courseId])
+  @@index([studentId])
+}
+
+model ProgramOutcome {
+  id                 String    @id @default(cuid())
+  programId          String
+  frameworkOutcomeId String? // [NEW] null = program-defined extra outcome
+  code               String
+  title              String
+  description        String?   @db.Text
+  isActive           Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  deletedAt          DateTime?
+
+  program          Program              @relation(fields: [programId], references: [id])
+  frameworkOutcome FrameworkOutcome?    @relation(fields: [frameworkOutcomeId], references: [id])
+  mappings         CoPoMapping[]
+  poAttainments    PoAttainment[]
+  cohortAttainments CohortPoAttainment[]
+  peoMappings      PeoPoMap[]
+  cqiActions       CqiAction[]
+
+  @@unique([programId, code])
+}
+
+model CourseOutcome {
+  id          String       @id @default(cuid())
+  courseId    String
+  code        String
+  title       String
+  description String?      @db.Text
+  bloomDomain BloomDomain?
+  bloomLevel  Int?
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  deletedAt   DateTime?
+
+  course             Course               @relation(fields: [courseId], references: [id])
+  mappings           CoPoMapping[]
+  assessmentCOs      AssessmentCO[]
+  coAttainments      CoAttainment[]
+  courseCoAttainments CourseCoAttainment[]
+  knowledgeProfiles  CourseOutcomeWk[] // [NEW] s.5.3.6 WK mapping
+  cqiActions         CqiAction[]
+
+  @@unique([courseId, code])
+}
+
+// [NEW] s.5.3.6 — each WK attribute must be demonstrably addressed in the curriculum
+model CourseOutcomeWk {
+  courseOutcomeId    String
+  knowledgeProfileId String
+
+  courseOutcome    CourseOutcome    @relation(fields: [courseOutcomeId], references: [id], onDelete: Cascade)
+  knowledgeProfile KnowledgeProfile @relation(fields: [knowledgeProfileId], references: [id], onDelete: Cascade)
+
+  @@id([courseOutcomeId, knowledgeProfileId])
+}
+
+model CourseComplexAttr {
+  courseId           String
+  complexAttributeId String
+  justification      String? @db.Text // evaluators ask; store the answer
+
+  course           Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  complexAttribute ComplexAttribute @relation(fields: [complexAttributeId], references: [id], onDelete: Cascade)
+
+  @@id([courseId, complexAttributeId])
+}
+
+model CourseSdg {
+  courseId String
+  sdgId    String
+  howAddressed String? @db.Text
+
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  sdg    Sdg    @relation(fields: [sdgId], references: [id], onDelete: Cascade)
+
+  @@id([courseId, sdgId])
+}
+
+model CoPoMapping {
+  id               String           @id @default(cuid())
+  courseId         String
+  courseOutcomeId  String
+  programOutcomeId String
+  correlation      CorrelationValue // [CHANGED] no longer nullable; a mapping without strength is not a mapping
+  justification    String?          @db.Text
+  version          Int              @default(1)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  course         Course         @relation(fields: [courseId], references: [id])
+  courseOutcome  CourseOutcome  @relation(fields: [courseOutcomeId], references: [id])
+  programOutcome ProgramOutcome @relation(fields: [programOutcomeId], references: [id])
+
+  @@unique([courseId, courseOutcomeId, programOutcomeId])
+  @@index([courseId])
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ASSESSMENT
+// ══════════════════════════════════════════════════════════════════════
+
+model Assessment {
+  id             String         @id @default(cuid())
+  courseId       String
+  type           AssessmentType
+  method         AssessMethod   @default(DIRECT) // [NEW] s.5.2.5
+  title          String
+  totalMarks     Float
+  weight         Float          @default(1) // [CHANGED] genuine weight in the course again
+  attainmentMark Float? // [NEW] absolute pass mark for this assessment; null = derive from policy
+  conductedOn    DateTime?
+  isActive       Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  deletedAt      DateTime?
+
+  course            Course                  @relation(fields: [courseId], references: [id])
+  assessmentCOs     AssessmentCO[]
+  marks             Mark[]
+  complexAttributes AssessmentComplexAttr[] // [NEW] s.5.3.6 WP/EA at the assessment level
+  sdgs              AssessmentSdg[]
+  evidence          Evidence[]
+
+  @@index([courseId])
+}
+
+model AssessmentComplexAttr {
+  assessmentId       String
+  complexAttributeId String
+
+  assessment       Assessment       @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  complexAttribute ComplexAttribute @relation(fields: [complexAttributeId], references: [id], onDelete: Cascade)
+
+  @@id([assessmentId, complexAttributeId])
+}
+
+model AssessmentSdg {
+  assessmentId String
+  sdgId        String
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  sdg        Sdg        @relation(fields: [sdgId], references: [id], onDelete: Cascade)
+
+  @@id([assessmentId, sdgId])
+}
+
+model AssessmentCO {
+  id              String @id @default(cuid())
+  assessmentId    String
+  courseOutcomeId String
+  markShare       Float  @default(1) // [NEW] fraction of this assessment carrying the CO
+
+  assessment    Assessment    @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  courseOutcome CourseOutcome @relation(fields: [courseOutcomeId], references: [id])
+
+  @@unique([assessmentId, courseOutcomeId])
+}
+
+model Mark {
+  id            String   @id @default(cuid())
+  assessmentId  String
+  studentId     String
+  marksObtained Float
+  isAbsent      Boolean  @default(false) // [NEW] absent is not zero; it is excluded
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id])
+  student    User       @relation(fields: [studentId], references: [id]) // [CHANGED] real FK
+
+  @@unique([assessmentId, studentId])
+  @@index([studentId])
+}
+
+model MarkAuditLog {
+  id           String   @id @default(cuid())
+  assessmentId String
+  studentId    String
+  changedById  String
+  beforeValue  Float?
+  afterValue   Float?
+  reason       String?
+  changedAt    DateTime @default(now())
+
+  @@index([assessmentId, studentId])
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// [CHANGED] THRESHOLD POLICY
+// ACC-MAN-02 v3.0 s.5.0 states plainly that the criteria carry no quantitative
+// benchmark and that adequacy is judged qualitatively. So the numbers are the
+// program's to set and to defend. Versioned, dated, with the rationale attached.
+// ══════════════════════════════════════════════════════════════════════
+
+model ThresholdPolicy {
+  id        String   @id @default(cuid())
+  programId String
+  version   Int
+  label     String // "ICE OBE Policy 2026"
+
+  // tier 1: has this student attained this CO?
+  coStudentThreshold Float @default(60) // % of weighted marks
+  // tier 2: has the cohort attained this CO in this course offering?
+  coCohortThreshold  Float @default(60) // % of students clearing tier 1
+  poStudentThreshold Float @default(60)
+  poCohortThreshold  Float @default(60)
+
+  // optional graded reporting on top of the binary decision
+  l3Min Float @default(80)
+  l2Min Float @default(70)
+  l1Min Float @default(60)
+
+  rationale  String   @db.Text // why these numbers; an evaluator will ask
+  approvedBy String? // academic committee, minute reference
+  approvedAt DateTime?
+  effectiveFrom DateTime
+  effectiveTill DateTime?
+  createdAt  DateTime @default(now())
+
+  program Program @relation(fields: [programId], references: [id])
+
+  @@unique([programId, version])
+  @@index([programId, effectiveFrom])
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ATTAINMENT
+// ══════════════════════════════════════════════════════════════════════
+
+model CoAttainment {
+  id              String          @id @default(cuid())
+  courseOutcomeId String
+  studentId       String
+  courseId        String
+  percentage      Float
+  attained        Boolean // [NEW] the tier-1 decision, stored not recomputed
+  level           AttainmentLevel
+  policyVersion   Int // [CHANGED] which ThresholdPolicy produced this
+  matrixVersion   Int
+  computedAt      DateTime        @default(now())
+
+  courseOutcome CourseOutcome @relation(fields: [courseOutcomeId], references: [id])
+  student       User          @relation(fields: [studentId], references: [id])
+
+  @@unique([courseOutcomeId, studentId])
+  @@index([courseId])
+  @@index([studentId])
+}
+
+// [NEW] tier 2 — did the course offering deliver the CO at all?
+// This is the number CQI runs on. The original schema could not express it.
+model CourseCoAttainment {
+  id              String   @id @default(cuid())
+  courseId        String
+  courseOutcomeId String
+  enrolledCount   Int
+  assessedCount   Int
+  attainedCount   Int
+  attainmentPct   Float // attainedCount / assessedCount * 100
+  attained        Boolean
+  policyVersion   Int
+  computedAt      DateTime @default(now())
+
+  course        Course        @relation(fields: [courseId], references: [id])
+  courseOutcome CourseOutcome @relation(fields: [courseOutcomeId], references: [id])
+
+  @@unique([courseId, courseOutcomeId])
+}
+
+model PoAttainment {
+  id               String          @id @default(cuid())
+  programOutcomeId String
+  studentId        String
+  courseId         String?         // [CHANGED] nullable: a PO rolls up across courses
+  percentage       Float
+  attained         Boolean
+  level            AttainmentLevel
+  policyVersion    Int
+  matrixVersion    Int
+  computedAt       DateTime        @default(now())
+
+  programOutcome ProgramOutcome @relation(fields: [programOutcomeId], references: [id])
+  student        User           @relation(fields: [studentId], references: [id])
+
+  @@unique([programOutcomeId, studentId, courseId])
+  @@index([courseId])
+  @@index([studentId])
+}
+
+// [NEW] s.5.2.5 — "students attain all POs by graduation". That is a statement
+// about a cohort at a point in time, which nothing in the original schema stored.
+model CohortPoAttainment {
+  id               String   @id @default(cuid())
+  programId        String
+  sessionId        String // the batch
+  programOutcomeId String
+  cohortSize       Int
+  assessedCount    Int
+  attainedCount    Int
+  attainmentPct    Float
+  attained         Boolean
+  directOnly       Boolean  @default(true) // s.5.2.5 requires direct methods
+  policyVersion    Int
+  computedAt       DateTime @default(now())
+
+  program        Program        @relation(fields: [programId], references: [id])
+  session        Session        @relation(fields: [sessionId], references: [id])
+  programOutcome ProgramOutcome @relation(fields: [programOutcomeId], references: [id])
+
+  @@unique([sessionId, programOutcomeId])
+  @@index([programId])
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// [NEW] EVIDENCE — s.5.2.3 requires lecture plans, grading policy and
+// samples of corresponding student works to be available.
+// ══════════════════════════════════════════════════════════════════════
+
+model Evidence {
+  id           String       @id @default(cuid())
+  kind         EvidenceKind
+  courseId     String?
+  assessmentId String?
+  studentId    String? // for script samples; retention policy applies
+  title        String
+  storagePath  String // Supabase Storage object key
+  mimeType     String?
+  sizeBytes    Int?
+  uploadedById String
+  uploadedAt   DateTime     @default(now())
+  retainUntil  DateTime? // scripts are personal data; set an expiry
+
+  course     Course?     @relation(fields: [courseId], references: [id])
+  assessment Assessment? @relation(fields: [assessmentId], references: [id])
+  uploadedBy User        @relation(fields: [uploadedById], references: [id])
+
+  @@index([courseId, kind])
+  @@index([assessmentId])
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// [NEW] CQI — s.5.5. A closed loop with state, not a report section.
+// ══════════════════════════════════════════════════════════════════════
+
+model CqiAction {
+  id               String    @id @default(cuid())
+  programId        String
+  source           CqiSource
+  cycleLabel       String // "Spring 2026"
+  courseOutcomeId  String?
+  programOutcomeId String?
+  peoId            String?
+  finding          String    @db.Text // what fell short, with the number
+  action           String    @db.Text // what was decided
+  ownerId          String
+  status           CqiStatus @default(OPEN)
+  dueDate          DateTime?
+  closedAt         DateTime?
+  closureNote      String?   @db.Text
+  verifiedImpact   String?   @db.Text // the next cycle's number, for the loop to close
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  program        Program         @relation(fields: [programId], references: [id])
+  courseOutcome  CourseOutcome?  @relation(fields: [courseOutcomeId], references: [id])
+  programOutcome ProgramOutcome? @relation(fields: [programOutcomeId], references: [id])
+  peo            Peo?            @relation(fields: [peoId], references: [id])
+  owner          User            @relation("cqiOwner", fields: [ownerId], references: [id])
+
+  @@index([programId, status])
+  @@index([cycleLabel])
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// REPORTING AND AUDIT
+// ══════════════════════════════════════════════════════════════════════
+
+model Report {
+  id            String   @id @default(cuid())
+  courseId      String?
+  generatedById String
+  reportType    String // "SAR_ANNEX_CO_PO", "SAR_ANNEX_WK_MAP", "CQI_REGISTER", ...
+  format        String
+  filePath      String
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+
+  course      Course? @relation(fields: [courseId], references: [id])
+  generatedBy User    @relation(fields: [generatedById], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  action    String
+  entity    String
+  entityId  String
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([entity, entityId])
+  @@index([userId])
+}

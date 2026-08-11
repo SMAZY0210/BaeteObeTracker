@@ -1,0 +1,204 @@
+const path = require('path');
+const fs = require('fs');
+const prisma = require('../prisma');
+
+const REPORTS_DIR = process.env.REPORTS_DIR || '/tmp/obe-reports';
+try { fs.mkdirSync(REPORTS_DIR, { recursive: true }); } catch(e) {}
+
+// Helper: build report metadata
+const createReportRecord = async ({ courseId, generatedById, reportType, format, filePath }) => {
+  const expiresAt = new Date(Date.now() + Number(process.env.REPORT_RETENTION_DAYS || 30) * 24 * 60 * 60 * 1000);
+  return prisma.report.create({ data: { courseId, generatedById, reportType, format, filePath, expiresAt } });
+};
+
+// POST /api/v1/reports/course/:courseId
+const generateCourseReport = async (req, res, next) => {
+  try {
+    const { courseId } = req.params;
+    const { format = 'PDF' } = req.body;
+    const generatedById = req.user.userId;
+
+    const course = await prisma.course.findUnique({
+      where: { id: courseId },
+      include: {
+        program: true, session: true,
+        outcomes: { where: { deletedAt: null } },
+        assessments: {
+          where: { deletedAt: null },
+          include: { assessmentCOs: { include: { courseOutcome: true } }, marks: true },
+        },
+        mappings: { include: { courseOutcome: true, programOutcome: true } },
+      },
+    });
+    if (!course) return res.status(404).json({ status: 'error', error: 'Course not found' });
+
+    const coAttainments = await prisma.coAttainment.findMany({
+      where: { courseId },
+      include: { courseOutcome: true },
+    });
+    const poAttainments = await prisma.poAttainment.findMany({
+      where: { courseId },
+      include: { programOutcome: true },
+    });
+
+    if (format === 'PDF') {
+      const fileName = `course_report_${courseId}_${Date.now()}.pdf`;
+      const filePath = path.join(REPORTS_DIR, fileName);
+      await generateCoursePdf(course, coAttainments, poAttainments, filePath, req.user);
+      const record = await createReportRecord({ courseId, generatedById, reportType: 'COURSE_ATTAINMENT', format: 'PDF', filePath });
+      return res.json({ status: 'success', data: { reportId: record.id, downloadUrl: `/api/v1/reports/${record.id}/download` } });
+    }
+
+    if (format === 'CSV') {
+      const csv = buildCsv(course, coAttainments, poAttainments);
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="course_report_${courseId}.csv"`);
+      return res.send(csv);
+    }
+
+    return res.status(400).json({ status: 'error', error: 'Invalid format. Use PDF or CSV.' });
+  } catch (err) { next(err); }
+};
+
+// GET /api/v1/reports/:reportId/download
+const downloadReport = async (req, res, next) => {
+  try {
+    const { reportId } = req.params;
+    const report = await prisma.report.findUnique({ where: { id: reportId } });
+    if (!report) return res.status(404).json({ status: 'error', error: 'Report not found' });
+    if (new Date() > report.expiresAt) return res.status(410).json({ status: 'error', error: 'Report has expired' });
+    if (!fs.existsSync(report.filePath)) return res.status(404).json({ status: 'error', error: 'Report file not found on disk' });
+    res.download(report.filePath);
+  } catch (err) { next(err); }
+};
+
+// POST /api/v1/reports/student/transcript
+const generateStudentTranscript = async (req, res, next) => {
+  try {
+    const studentId = req.user.userId;
+    const coAttainments = await prisma.coAttainment.findMany({
+      where: { studentId },
+      include: { courseOutcome: { include: { course: { select: { name: true, code: true } } } } },
+    });
+    const poAttainments = await prisma.poAttainment.findMany({
+      where: { studentId },
+      include: { programOutcome: { select: { code: true, title: true } } },
+    });
+
+    const fileName = `transcript_${studentId}_${Date.now()}.pdf`;
+    const filePath = path.join(REPORTS_DIR, fileName);
+    await generateTranscriptPdf(studentId, coAttainments, poAttainments, filePath);
+    const record = await createReportRecord({ generatedById: studentId, reportType: 'STUDENT_TRANSCRIPT', format: 'PDF', filePath });
+    res.json({ status: 'success', data: { reportId: record.id, downloadUrl: `/api/v1/reports/${record.id}/download` } });
+  } catch (err) { next(err); }
+};
+
+// ─── PDF Generators ───────────────────────────────────────────
+
+async function generateCoursePdf(course, coAttainments, poAttainments, filePath, user) {
+  return new Promise((resolve, reject) => {
+    const PDFDocument = require('pdfkit');
+    const doc = new PDFDocument({ margin: 40 });
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
+
+    // Header
+    doc.fontSize(18).font('Helvetica-Bold').text('Course Attainment Report', { align: 'center' });
+    doc.fontSize(11).font('Helvetica').text(`Course: ${course.name} (${course.code})`, { align: 'center' });
+    doc.text(`Program: ${course.program.name} | Session: ${course.session.name}`, { align: 'center' });
+    doc.fontSize(8).fillColor('gray')
+      .text(`Generated by: ${user.userId} | ${new Date().toISOString()} | CONFIDENTIAL`, { align: 'center' });
+    doc.moveDown().fillColor('black');
+
+    // CO Attainment Section
+    doc.fontSize(13).font('Helvetica-Bold').text('Course Outcome Attainment');
+    doc.moveDown(0.5);
+    // Aggregate by CO (average over students)
+    const coMap = {};
+    for (const att of coAttainments) {
+      const key = att.courseOutcomeId;
+      if (!coMap[key]) coMap[key] = { co: att.courseOutcome, percentages: [] };
+      coMap[key].percentages.push(att.percentage);
+    }
+    Object.values(coMap).forEach(({ co, percentages }) => {
+      const avg = percentages.reduce((s, p) => s + p, 0) / percentages.length;
+      doc.fontSize(10).font('Helvetica')
+        .text(`${co.code}: ${co.title} - Avg: ${avg.toFixed(1)}% [${co.profileType || 'N/A'} / ${co.bloomDomain || 'N/A'}${co.bloomLevel || ''}]`);
+    });
+
+    doc.moveDown();
+    doc.fontSize(13).font('Helvetica-Bold').text('Program Outcome Attainment');
+    doc.moveDown(0.5);
+    const poMap = {};
+    for (const att of poAttainments) {
+      const key = att.programOutcomeId;
+      if (!poMap[key]) poMap[key] = { po: att.programOutcome, percentages: [] };
+      poMap[key].percentages.push(att.percentage);
+    }
+    Object.values(poMap).forEach(({ po, percentages }) => {
+      const avg = percentages.reduce((s, p) => s + p, 0) / percentages.length;
+      doc.fontSize(10).font('Helvetica').text(`${po.code}: ${po.title} - Avg: ${avg.toFixed(1)}%`);
+    });
+
+    doc.end();
+    stream.on('finish', resolve);
+    stream.on('error', reject);
+  });
+}
+
+async function generateTranscriptPdf(studentId, coAttainments, poAttainments, filePath) {
+  return new Promise((resolve, reject) => {
+    const PDFDocument = require('pdfkit');
+    const doc = new PDFDocument({ margin: 40 });
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
+
+    doc.fontSize(18).font('Helvetica-Bold').text('Personal Attainment Transcript', { align: 'center' });
+    doc.fontSize(10).font('Helvetica').text(`Student ID: ${studentId}`, { align: 'center' });
+    doc.fontSize(8).fillColor('gray').text(`Generated: ${new Date().toISOString()}`, { align: 'center' });
+    doc.moveDown().fillColor('black');
+
+    doc.fontSize(13).font('Helvetica-Bold').text('CO Attainment by Course');
+    doc.moveDown(0.5);
+    for (const att of coAttainments) {
+      doc.fontSize(10).font('Helvetica')
+        .text(`${att.courseOutcome.course?.code || ''} | ${att.courseOutcome.code}: ${att.courseOutcome.title} - ${att.percentage.toFixed(1)}% (${att.level})`);
+    }
+
+    doc.moveDown();
+    doc.fontSize(13).font('Helvetica-Bold').text('Program Outcome Summary');
+    doc.moveDown(0.5);
+    const poMap = {};
+    for (const att of poAttainments) {
+      const key = att.programOutcomeId;
+      if (!poMap[key]) poMap[key] = { po: att.programOutcome, percentages: [] };
+      poMap[key].percentages.push(att.percentage);
+    }
+    Object.values(poMap).forEach(({ po, percentages }) => {
+      const avg = percentages.reduce((s, p) => s + p, 0) / percentages.length;
+      doc.fontSize(10).font('Helvetica').text(`${po.code}: ${po.title} - ${avg.toFixed(1)}%`);
+    });
+
+    doc.end();
+    stream.on('finish', resolve);
+    stream.on('error', reject);
+  });
+}
+
+function buildCsv(course, coAttainments, poAttainments) {
+  const lines = [`Course Attainment Report: ${course.name} (${course.code})`, ''];
+  lines.push('CO Attainments');
+  lines.push('StudentId,CO Code,CO Title,Percentage,Level');
+  for (const att of coAttainments) {
+    lines.push(`${att.studentId},${att.courseOutcome.code},"${att.courseOutcome.title}",${att.percentage.toFixed(2)},${att.level}`);
+  }
+  lines.push('');
+  lines.push('PO Attainments');
+  lines.push('StudentId,PO Code,PO Title,Percentage,Level');
+  for (const att of poAttainments) {
+    lines.push(`${att.studentId},${att.programOutcome.code},"${att.programOutcome.title}",${att.percentage.toFixed(2)},${att.level}`);
+  }
+  return lines.join('\n');
+}
+
+module.exports = { generateCourseReport, downloadReport, generateStudentTranscript };
