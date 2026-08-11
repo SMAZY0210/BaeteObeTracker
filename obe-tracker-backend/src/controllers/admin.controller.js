@@ -7,7 +7,10 @@ const getFaculties = async (req, res, next) => {
   try {
     const items = await prisma.faculty.findMany({
       where: { institutionId: req.user.institutionId, deletedAt: null },
-      include: { _count: { select: { departments: true } } },
+      // Filtered count. A bare `departments: true` counts soft-deleted rows too,
+      // so a faculty whose only department was deleted still reported 1 and the
+      // UI refused to delete it.
+      include: { _count: { select: { departments: { where: { deletedAt: null } } } } },
     });
     res.json({ status: 'success', data: items });
   } catch (err) { next(err); }
@@ -94,7 +97,12 @@ const getDepartments = async (req, res, next) => {
       where: { institutionId: req.user.institutionId, deletedAt: null },
       include: {
         faculty: { select: { id: true, name: true, code: true } },
-        _count: { select: { programs: true, sessions: true } },
+        _count: {
+          select: {
+            programs: { where: { deletedAt: null } },
+            sessions: true, // Session has no deletedAt, only status
+          },
+        },
       },
     });
 
