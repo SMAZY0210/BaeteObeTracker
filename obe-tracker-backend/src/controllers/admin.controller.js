@@ -62,20 +62,26 @@ const deleteFaculty = async (req, res, next) => {
       });
     }
 
-    await prisma.faculty.update({
-      where: { id },
-      data: { deletedAt: new Date(), isActive: false },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        userId: req.user.id,
-        action: 'FACULTY_DELETE',
-        entity: 'Faculty',
-        entityId: id,
-        meta: { code: faculty.code, name: faculty.name },
-      },
-    });
+    // One transaction: the soft delete and its audit row land together or not
+    // at all. Run separately, a failing audit write left the faculty deleted
+    // while the response said it had failed.
+    await prisma.$transaction([
+      prisma.faculty.update({
+        where: { id },
+        data: { deletedAt: new Date(), isActive: false },
+      }),
+      prisma.auditLog.create({
+        data: {
+          // The JWT payload calls this userId, not id. req.user is the raw
+          // payload, so req.user.id is undefined and the create throws.
+          userId: req.user.userId,
+          action: 'FACULTY_DELETE',
+          entity: 'Faculty',
+          entityId: id,
+          meta: { code: faculty.code, name: faculty.name },
+        },
+      }),
+    ]);
 
     res.json({ status: 'success', data: { message: `Faculty "${faculty.name}" deleted` } });
   } catch (err) { next(err); }
@@ -195,20 +201,21 @@ const deleteDepartment = async (req, res, next) => {
       });
     }
 
-    await prisma.department.update({
-      where: { id },
-      data: { deletedAt: new Date(), isActive: false },
-    });
-
-    await prisma.auditLog.create({
-      data: {
-        userId: req.user.id,
-        action: 'DEPARTMENT_DELETE',
-        entity: 'Department',
-        entityId: id,
-        meta: { code: dept.code, name: dept.name },
-      },
-    });
+    await prisma.$transaction([
+      prisma.department.update({
+        where: { id },
+        data: { deletedAt: new Date(), isActive: false },
+      }),
+      prisma.auditLog.create({
+        data: {
+          userId: req.user.userId,
+          action: 'DEPARTMENT_DELETE',
+          entity: 'Department',
+          entityId: id,
+          meta: { code: dept.code, name: dept.name },
+        },
+      }),
+    ]);
 
     res.json({ status: 'success', data: { message: `Department "${dept.name}" deleted` } });
   } catch (err) { next(err); }

@@ -86,7 +86,7 @@ const createPolicy = async (req, res, next) => {
 
     await prisma.auditLog.create({
       data: {
-        userId: req.user.id,
+        userId: req.user.userId,
         action: 'POLICY_CREATE',
         entity: 'ThresholdPolicy',
         entityId: policy.id,
