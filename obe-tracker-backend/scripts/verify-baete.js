@@ -189,12 +189,36 @@ async function checkMappingCoverage(fw) {
     pass('mapping', `SDG links: ${sdgCourse} course, ${sdgAssess} assessment`);
   }
 
-  // CO-PO matrix
-  const nullCorr = await prisma.coPoMapping.count({ where: { correlation: undefined } }).catch(() => 0);
+  // CO-PO matrix.
+  // There is no "missing correlation" check here: the column is non-nullable in
+  // the schema, so a mapping without a strength cannot exist. The real gaps are
+  // outcomes sitting on either side of the matrix with nothing joined to them.
   const total = await prisma.coPoMapping.count();
-  if (!total) fail('mapping', 'no CO-PO mappings at all');
-  else pass('mapping', `${total} CO-PO mappings`);
-  if (nullCorr) fail('mapping', `${nullCorr} mappings without a correlation strength`);
+  if (!total) {
+    fail('mapping', 'no CO-PO mappings at all');
+  } else {
+    pass('mapping', `${total} CO-PO mappings`);
+
+    const orphanCos = await prisma.courseOutcome.count({
+      where: { deletedAt: null, mappings: { none: {} } },
+    });
+    if (orphanCos) {
+      warn('mapping', `${orphanCos} CO(s) map to no PO. They are assessed but contribute to nothing.`);
+    }
+
+    // A PO with no CO mapped to it can never be attained, which makes s.5.2.5
+    // ("students attain ALL POs by graduation") unanswerable for that outcome.
+    const unreachablePos = await prisma.programOutcome.findMany({
+      where: { deletedAt: null, isActive: true, mappings: { none: {} } },
+      select: { code: true },
+      orderBy: { code: 'asc' },
+    });
+    if (unreachablePos.length) {
+      fail('mapping', `${unreachablePos.length} PO(s) have no CO mapped to them (${unreachablePos.map((p) => p.code).join(', ')}). These can never be attained, so s.5.2.5 cannot be satisfied.`);
+    } else {
+      pass('mapping', 'every active PO has at least one CO mapped to it');
+    }
+  }
 }
 
 // ── 4. Attainment integrity ──────────────────────────────────────────
