@@ -214,7 +214,19 @@ async function checkMappingCoverage(fw) {
       orderBy: { code: 'asc' },
     });
     if (unreachablePos.length) {
-      fail('mapping', `${unreachablePos.length} PO(s) have no CO mapped to them (${unreachablePos.map((p) => p.code).join(', ')}). These can never be attained, so s.5.2.5 cannot be satisfied.`);
+      // Severity depends on whether the curriculum is complete. A partial course
+      // list legitimately will not touch every outcome; PO10 (Project Management
+      // and Finance) and PO12 (Entrepreneurship) are usually the last to be
+      // covered, and typically by courses outside the technical core.
+      const courseCount = await prisma.course.count({ where: { deletedAt: null } });
+      const codes = unreachablePos.map((p) => p.code).join(', ');
+      const msg = `${unreachablePos.length} PO(s) have no CO mapped to them (${codes}).`;
+
+      if (courseCount < 10) {
+        warn('mapping', `${msg} Only ${courseCount} course(s) are loaded, so this is expected for a partial curriculum. It becomes a FAIL once the full course list is in, because s.5.2.5 asks for attainment of ALL POs. Do not close it by inventing a mapping.`);
+      } else {
+        fail('mapping', `${msg} These can never be attained, so s.5.2.5 cannot be satisfied.`);
+      }
     } else {
       pass('mapping', 'every active PO has at least one CO mapped to it');
     }

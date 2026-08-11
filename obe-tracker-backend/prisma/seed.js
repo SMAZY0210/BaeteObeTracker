@@ -405,48 +405,70 @@ async function main() {
 
   // ── CO-PO Mappings ────────────────────────────────────────────
   // Correlation levels: WEAK=1, MODERATE=2, STRONG=3
+  //
+  // Rewritten against BAETE v3.0 (GAPC v4) PO codes. The previous version of
+  // this block was authored against the IEA v3.21 (2013) ordering, where the
+  // back half of the list meant something different:
+  //
+  //   code   v3.21 (what the old mappings meant)   BAETE v3.0 (what the code means now)
+  //   PO7    Environment and Sustainability        Ethics
+  //   PO8    Ethics                                Individual and Collaborative Team Work
+  //   PO9    Individual and Teamwork               Communication
+  //   PO10   Communication                         Project Management and Finance
+  //   PO11   Project Management and Finance        Life Long Learning
+  //   PO12   Lifelong Learning                     Entrepreneurship
+  //
+  // Nothing was edited when the framework changed, so the mappings slid one
+  // position. Two COs ended up claiming to teach Entrepreneurship because they
+  // had been mapped to "PO12 = Lifelong Learning", and PO11 (the real Life Long
+  // Learning) had nothing pointing at it at all.
+  //
+  // One row disappears in translation. v3 PO6 absorbed both old PO6 (The
+  // Engineer and Society) and old PO7 (Environment and Sustainability) into a
+  // single outcome, so web_co3's two separate mappings collapse into one.
   const mapData = [
     // ICE-3207 SRE
-    // CO1: Software Process & Requirement Elicitation → PO1 Strong, PO2 Moderate, PO12 Weak
+    // CO1: Software Process & Requirement Elicitation
     { coId: sre_co1.id, poCode: 'PO1',  correlation: 'STRONG'   },
     { coId: sre_co1.id, poCode: 'PO2',  correlation: 'MODERATE' },
-    { coId: sre_co1.id, poCode: 'PO12', correlation: 'WEAK'     },
-    // CO2: Requirements Analysis → PO2 Strong, PO3 Strong, PO4 Moderate
+    { coId: sre_co1.id, poCode: 'PO11', correlation: 'WEAK'     }, // was PO12 (Lifelong Learning)
+    // CO2: Requirements Analysis & Specification
     { coId: sre_co2.id, poCode: 'PO2',  correlation: 'STRONG'   },
     { coId: sre_co2.id, poCode: 'PO3',  correlation: 'STRONG'   },
     { coId: sre_co2.id, poCode: 'PO4',  correlation: 'MODERATE' },
-    // CO3: Requirements Validation → PO4 Strong, PO9 Strong, PO10 Moderate
+    // CO3: Requirements Validation & Management
     { coId: sre_co3.id, poCode: 'PO4',  correlation: 'STRONG'   },
-    { coId: sre_co3.id, poCode: 'PO9',  correlation: 'STRONG'   },
-    { coId: sre_co3.id, poCode: 'PO10', correlation: 'MODERATE' },
+    { coId: sre_co3.id, poCode: 'PO8',  correlation: 'STRONG'   }, // was PO9 (Individual and Teamwork)
+    { coId: sre_co3.id, poCode: 'PO9',  correlation: 'MODERATE' }, // was PO10 (Communication)
 
     // ICE-3205 Web Technologies
-    // CO1: Front-End → PO1 Strong, PO5 Strong, PO3 Moderate
+    // CO1: Front-End Web Development
     { coId: web_co1.id, poCode: 'PO1',  correlation: 'STRONG'   },
     { coId: web_co1.id, poCode: 'PO5',  correlation: 'STRONG'   },
     { coId: web_co1.id, poCode: 'PO3',  correlation: 'MODERATE' },
-    // CO2: Server-Side → PO3 Strong, PO5 Strong, PO2 Moderate
+    // CO2: Server-Side & Database Integration
     { coId: web_co2.id, poCode: 'PO3',  correlation: 'STRONG'   },
     { coId: web_co2.id, poCode: 'PO5',  correlation: 'STRONG'   },
     { coId: web_co2.id, poCode: 'PO2',  correlation: 'MODERATE' },
-    // CO3: Security & Deployment → PO6 Strong, PO8 Strong, PO7 Moderate
+    // CO3: Web Security & Deployment
+    // Old PO6 STRONG + old PO7 MODERATE both land on v3 PO6. Keeping the
+    // stronger of the two rather than inventing a second home for the weaker.
     { coId: web_co3.id, poCode: 'PO6',  correlation: 'STRONG'   },
-    { coId: web_co3.id, poCode: 'PO8',  correlation: 'STRONG'   },
-    { coId: web_co3.id, poCode: 'PO7',  correlation: 'MODERATE' },
+    { coId: web_co3.id, poCode: 'PO7',  correlation: 'STRONG'   }, // was PO8 (Ethics)
 
     // ICE-4107 Artificial Intelligence
-    // CO1: Fundamentals → PO1 Strong, PO12 Moderate
+    // CO1: AI Fundamentals & Knowledge Representation
     { coId: ai_co1.id, poCode: 'PO1',  correlation: 'STRONG'   },
-    { coId: ai_co1.id, poCode: 'PO12', correlation: 'MODERATE' },
-    // CO2: ML Design → PO2 Strong, PO3 Strong, PO5 Strong, PO4 Moderate
+    { coId: ai_co1.id, poCode: 'PO11', correlation: 'MODERATE' }, // was PO12 (Lifelong Learning)
+    // CO2: Machine Learning Model Design
     { coId: ai_co2.id, poCode: 'PO2',  correlation: 'STRONG'   },
     { coId: ai_co2.id, poCode: 'PO3',  correlation: 'STRONG'   },
     { coId: ai_co2.id, poCode: 'PO5',  correlation: 'STRONG'   },
     { coId: ai_co2.id, poCode: 'PO4',  correlation: 'MODERATE' },
-    // CO3: Ethics & Impact → PO6 Strong, PO8 Strong, PO9 Moderate
+    // CO3: AI Ethics & Societal Impact
     { coId: ai_co3.id, poCode: 'PO6',  correlation: 'STRONG'   },
-    { coId: ai_co3.id, poCode: 'PO8',  correlation: 'STRONG'   },
-    { coId: ai_co3.id, poCode: 'PO9',  correlation: 'MODERATE' },
+    { coId: ai_co3.id, poCode: 'PO7',  correlation: 'STRONG'   }, // was PO8 (Ethics)
+    { coId: ai_co3.id, poCode: 'PO8',  correlation: 'MODERATE' }, // was PO9 (Individual and Teamwork)
   ];
 
   // Attach courseId to each mapping entry
@@ -454,6 +476,30 @@ async function main() {
   for (const co of [sre_co1, sre_co2, sre_co3]) coToCourse[co.id] = sre.id;
   for (const co of [web_co1, web_co2, web_co3]) coToCourse[co.id] = web.id;
   for (const co of [ai_co1, ai_co2, ai_co3])   coToCourse[co.id] = ai.id;
+
+  // Drop mappings that are no longer in mapData before upserting.
+  // Without this, re-running the seed on a database that already holds the old
+  // v3.21-ordered rows leaves them in place: upsert only creates or updates, it
+  // never removes. The result would be a CO mapped to both PO11 and PO12, which
+  // is exactly the corruption this rewrite is meant to clear.
+  const wantedByCourse = {};
+  for (const m of mapData) {
+    const courseId = coToCourse[m.coId];
+    (wantedByCourse[courseId] ||= []).push(`${m.coId}:${poMap[m.poCode]}`);
+  }
+  for (const [courseId, wanted] of Object.entries(wantedByCourse)) {
+    const existing = await prisma.coPoMapping.findMany({
+      where: { courseId },
+      select: { id: true, courseOutcomeId: true, programOutcomeId: true },
+    });
+    const stale = existing.filter(
+      (e) => !wanted.includes(`${e.courseOutcomeId}:${e.programOutcomeId}`)
+    );
+    if (stale.length) {
+      await prisma.coPoMapping.deleteMany({ where: { id: { in: stale.map((x) => x.id) } } });
+      console.log(`  cleared ${stale.length} stale mapping(s) on one course`);
+    }
+  }
 
   for (const m of mapData) {
     const courseId = coToCourse[m.coId];
@@ -476,7 +522,15 @@ async function main() {
       },
     });
   }
-  console.log('✓ CO-PO mappings (9 per course, 27 total)');
+  console.log(`✓ CO-PO mappings (${mapData.length} total, BAETE v3.0 PO codes)`);
+
+  // PO10 (Project Management and Finance) and PO12 (Entrepreneurship) have no CO
+  // mapped to them, and that is the honest answer for three technical courses.
+  // In a full four-year curriculum they would be carried by other courses. The
+  // readiness audit will flag both; do not close that finding by inventing a
+  // mapping, because a fabricated correlation is precisely what an evaluator
+  // reading the matrix is looking for.
+
 
   // ── Students (login: studentId / 1234) ────────────────────────
   const studentList = [
