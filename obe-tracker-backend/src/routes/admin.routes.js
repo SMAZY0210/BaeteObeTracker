@@ -54,6 +54,13 @@ router.get('/attainment-report', c.getAttainmentReport);
 router.post('/users/bulk', c.bulkCreateUsers);
 router.get('/students/:studentId/attainment', c.getStudentAttainmentAdmin);
 
+// Curriculum versions. POs belong to a version, so a revision is a new version
+// rather than an edit to outcomes a graduated cohort was assessed against.
+router.get('/programs/:programId/curriculum-versions', c.getCurriculumVersions);
+router.post('/programs/:programId/curriculum-versions', c.createCurriculumVersion);
+router.put('/curriculum-versions/:id', c.updateCurriculumVersion);
+router.delete('/curriculum-versions/:id', c.deleteCurriculumVersion);
+
 // Accreditation framework (read-only; seeded by prisma/seed-framework.js)
 router.get('/framework', pol.getFramework);
 

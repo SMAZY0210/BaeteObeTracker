@@ -2,6 +2,7 @@ const multer = require('multer');
 const ExcelJS = require('exceljs');
 const bcrypt = require('bcrypt');
 const prisma = require('../prisma');
+const { recomputeAttainmentForCourse } = require('../services/attainment.service');
 const path = require('path');
 const fs = require('fs');
 
@@ -81,8 +82,29 @@ const bulkImportMarks = async (req, res, next) => {
     if (!req.file) return res.status(400).json({ status: 'error', error: 'No file uploaded' });
     const { assessmentId } = req.params;
 
-    const assessment = await prisma.assessment.findUnique({ where: { id: assessmentId } });
+    // Marks are recorded per CO, so the sheet carries one mark column per CO the
+    // assessment covers. Column order comes from the assessment, not the file,
+    // and the header row is checked against it: a spreadsheet whose columns have
+    // been reordered by hand would otherwise silently file CO3 marks under CO1.
+    const assessment = await prisma.assessment.findUnique({
+      where: { id: assessmentId },
+      include: {
+        assessmentCOs: {
+          include: { courseOutcome: { select: { id: true, code: true } } },
+          orderBy: { courseOutcome: { code: 'asc' } },
+        },
+      },
+    });
     if (!assessment) return res.status(404).json({ status: 'error', error: 'Assessment not found' });
+    if (!assessment.assessmentCOs.length) {
+      return res.status(400).json({ status: 'error', error: 'This assessment has no COs attached' });
+    }
+
+    const cols = assessment.assessmentCOs.map((ac) => ({
+      courseOutcomeId: ac.courseOutcomeId,
+      code: ac.courseOutcome.code,
+      max: ac.coMarks,
+    }));
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(req.file.path);
@@ -91,38 +113,71 @@ const bulkImportMarks = async (req, res, next) => {
     const errors = [];
     const valid = [];
 
-    sheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return;
-      const [, , studentId, marksObtained] = row.values;
-      if (!studentId || marksObtained === undefined) {
-        errors.push({ row: rowNumber, error: 'studentId and marksObtained are required' });
-        return;
+    // Header check. row.values is 1-based with a leading hole, so column 3
+    // onwards are the CO columns: [ , '#', 'studentId', 'CO1 (12)', ... ]
+    const header = (sheet.getRow(1).values || []).map((v) => String(v ?? '').trim());
+    cols.forEach((c, i) => {
+      const cell = header[3 + i] || '';
+      if (!cell.startsWith(c.code)) {
+        errors.push({
+          row: 1,
+          error: `Column ${3 + i} should be ${c.code} but reads "${cell}". Re-download the template rather than editing column order.`,
+        });
       }
-      const marks = Number(marksObtained);
-      if (isNaN(marks) || marks < 0 || marks > assessment.totalMarks) {
-        errors.push({ row: rowNumber, error: `Marks ${marks} out of range [0, ${assessment.totalMarks}]` });
-        return;
-      }
-      valid.push({ studentId: String(studentId), marksObtained: marks });
     });
+
+    if (!errors.length) {
+      sheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        const studentId = row.values[2];
+        if (!studentId) {
+          errors.push({ row: rowNumber, error: 'studentId is required' });
+          return;
+        }
+
+        cols.forEach((c, i) => {
+          const raw = row.values[3 + i];
+          if (raw === undefined || raw === null || String(raw).trim() === '') return; // not entered yet
+
+          const text = String(raw).trim().toUpperCase();
+          if (text === 'A' || text === 'ABSENT') {
+            valid.push({ studentId: String(studentId), courseOutcomeId: c.courseOutcomeId, marksObtained: 0, isAbsent: true });
+            return;
+          }
+
+          const marks = Number(raw);
+          if (isNaN(marks) || marks < 0 || marks > c.max) {
+            errors.push({ row: rowNumber, error: `${c.code}: ${raw} is outside [0, ${c.max}]` });
+            return;
+          }
+          valid.push({ studentId: String(studentId), courseOutcomeId: c.courseOutcomeId, marksObtained: marks, isAbsent: false });
+        });
+      });
+    }
 
     if (errors.length) {
       fs.unlinkSync(req.file.path);
-      return res.status(422).json({ status: 'error', error: 'Validation errors', errors });
+      return res.status(422).json({ status: 'error', error: 'Validation errors', errors: errors.slice(0, 50) });
     }
 
     await prisma.$transaction(
-      valid.map(({ studentId, marksObtained }) =>
+      valid.map(({ studentId, courseOutcomeId, marksObtained, isAbsent }) =>
         prisma.mark.upsert({
-          where: { assessmentId_studentId: { assessmentId, studentId } },
-          create: { assessmentId, studentId, marksObtained },
-          update: { marksObtained },
+          where: {
+            assessmentId_studentId_courseOutcomeId: { assessmentId, studentId, courseOutcomeId },
+          },
+          create: { assessmentId, studentId, courseOutcomeId, marksObtained, isAbsent },
+          update: { marksObtained, isAbsent },
         })
       )
     );
 
     fs.unlinkSync(req.file.path);
-    res.json({ status: 'success', data: { imported: valid.length } });
+
+    // Attainment reflects the previous marks until this runs.
+    await recomputeAttainmentForCourse(assessment.courseId, null, req.user?.institutionId);
+
+    res.json({ status: 'success', data: { imported: valid.length, coColumns: cols.length } });
   } catch (err) { next(err); }
 };
 
@@ -144,16 +199,57 @@ const getStudentTemplate = async (req, res, next) => {
 const getMarksTemplate = async (req, res, next) => {
   try {
     const { assessmentId } = req.params;
-    const assessment = await prisma.assessment.findUnique({ where: { id: assessmentId } });
+    const assessment = await prisma.assessment.findUnique({
+      where: { id: assessmentId },
+      include: {
+        assessmentCOs: {
+          include: { courseOutcome: { select: { id: true, code: true } } },
+          orderBy: { courseOutcome: { code: 'asc' } },
+        },
+      },
+    });
     if (!assessment) return res.status(404).json({ status: 'error', error: 'Assessment not found' });
 
-    // Get enrolled students
-    const enrolments = await prisma.enrolment.findMany({ where: { courseId: assessment.courseId } });
+    const cols = assessment.assessmentCOs.map((ac) => ({ code: ac.courseOutcome.code, max: ac.coMarks }));
+
+    // Student names are prefilled. The old template left the reference column
+    // blank, which meant whoever filled it in was typing marks against opaque
+    // cuid strings with no way to tell whose row they were on.
+    const enrolments = await prisma.enrolment.findMany({
+      where: { courseId: assessment.courseId },
+      include: {
+        student: { select: { id: true, firstName: true, lastName: true, institutionalId: true } },
+      },
+    });
+    enrolments.sort((a, b) =>
+      (a.student?.institutionalId || '').localeCompare(b.student?.institutionalId || '')
+    );
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Marks');
-    sheet.addRow(['#', 'studentId', `marksObtained (max: ${assessment.totalMarks})`, 'studentName (reference)']);
-    enrolments.forEach((e, i) => sheet.addRow([i + 1, e.studentId, '', '']));
+
+    sheet.addRow([
+      '#',
+      'studentId',
+      ...cols.map((c) => `${c.code} (max: ${c.max})`),
+      'studentName (reference)',
+      'roll (reference)',
+    ]);
+    sheet.getRow(1).font = { bold: true };
+
+    enrolments.forEach((e, i) =>
+      sheet.addRow([
+        i + 1,
+        e.studentId,
+        ...cols.map(() => ''),
+        `${e.student?.firstName ?? ''} ${e.student?.lastName ?? ''}`.trim(),
+        e.student?.institutionalId ?? '',
+      ])
+    );
+
+    sheet.addRow([]);
+    sheet.addRow(['', 'Enter "A" for absent. Blank means not yet marked, which is not the same as zero.']);
+    sheet.addRow(['', 'Do not reorder or rename the CO columns; the importer checks them against the assessment.']);
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="marks_template_${assessmentId}.xlsx"`);

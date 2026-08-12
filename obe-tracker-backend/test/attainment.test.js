@@ -36,20 +36,20 @@ function fixture() {
   return [
     {
       id: 'q1', totalMarks: 10, weight: 1, attainmentMark: null,
-      assessmentCOs: [{ courseOutcomeId: 'co1', markShare: 1 }],
+      assessmentCOs: [{ courseOutcomeId: 'co1', coMarks: 10 }],
       marks: [
-        { studentId: 's1', marksObtained: 10, isAbsent: false },
-        { studentId: 's2', marksObtained: 3, isAbsent: false },
-        { studentId: 's3', marksObtained: 0, isAbsent: true },
+        { studentId: 's1', courseOutcomeId: 'co1', marksObtained: 10, isAbsent: false },
+        { studentId: 's2', courseOutcomeId: 'co1', marksObtained: 3, isAbsent: false },
+        { studentId: 's3', courseOutcomeId: 'co1', marksObtained: 0, isAbsent: true },
       ],
     },
     {
       id: 'f1', totalMarks: 100, weight: 3, attainmentMark: null,
-      assessmentCOs: [{ courseOutcomeId: 'co2', markShare: 1 }],
+      assessmentCOs: [{ courseOutcomeId: 'co2', coMarks: 100 }],
       marks: [
-        { studentId: 's1', marksObtained: 40, isAbsent: false },
-        { studentId: 's2', marksObtained: 85, isAbsent: false },
-        { studentId: 's3', marksObtained: 70, isAbsent: false },
+        { studentId: 's1', courseOutcomeId: 'co2', marksObtained: 40, isAbsent: false },
+        { studentId: 's2', courseOutcomeId: 'co2', marksObtained: 85, isAbsent: false },
+        { studentId: 's3', courseOutcomeId: 'co2', marksObtained: 70, isAbsent: false },
       ],
     },
   ];
@@ -131,13 +131,13 @@ test('mark scale does not decide the PO figure', () => {
   // Same percentages, wildly different mark totals. The PO result must match.
   const small = [{
     id: 'a', totalMarks: 10, weight: 1, attainmentMark: null,
-    assessmentCOs: [{ courseOutcomeId: 'co1', markShare: 1 }],
-    marks: [{ studentId: 's', marksObtained: 8, isAbsent: false }],
+    assessmentCOs: [{ courseOutcomeId: 'co1', coMarks: 10 }],
+    marks: [{ studentId: 's', courseOutcomeId: 'co1', marksObtained: 8, isAbsent: false }],
   }];
   const large = [{
     id: 'b', totalMarks: 1000, weight: 1, attainmentMark: null,
-    assessmentCOs: [{ courseOutcomeId: 'co1', markShare: 1 }],
-    marks: [{ studentId: 's', marksObtained: 800, isAbsent: false }],
+    assessmentCOs: [{ courseOutcomeId: 'co1', coMarks: 1000 }],
+    marks: [{ studentId: 's', courseOutcomeId: 'co1', marksObtained: 800, isAbsent: false }],
   }];
 
   const a = computeStudentCoAttainment({ studentId: 's', courseOutcome: co1, assessments: small, policy });
@@ -149,8 +149,8 @@ test('mark scale does not decide the PO figure', () => {
 test('explicit attainmentMark overrides the policy percentage', () => {
   const assessments = [{
     id: 'a', totalMarks: 100, weight: 1, attainmentMark: 40, // faculty set a 40 pass
-    assessmentCOs: [{ courseOutcomeId: 'co1', markShare: 1 }],
-    marks: [{ studentId: 's', marksObtained: 45, isAbsent: false }],
+    assessmentCOs: [{ courseOutcomeId: 'co1', coMarks: 100 }],
+    marks: [{ studentId: 's', courseOutcomeId: 'co1', marksObtained: 45, isAbsent: false }],
   }];
   const r = computeStudentCoAttainment({ studentId: 's', courseOutcome: co1, assessments, policy });
   assert.equal(r.basis, 'EXPLICIT_MARK');
@@ -161,13 +161,13 @@ test('partial explicit marks fall back to policy rather than mixing', () => {
   const assessments = [
     {
       id: 'a', totalMarks: 50, weight: 1, attainmentMark: 20,
-      assessmentCOs: [{ courseOutcomeId: 'co1', markShare: 1 }],
-      marks: [{ studentId: 's', marksObtained: 25, isAbsent: false }],
+      assessmentCOs: [{ courseOutcomeId: 'co1', coMarks: 50 }],
+      marks: [{ studentId: 's', courseOutcomeId: 'co1', marksObtained: 25, isAbsent: false }],
     },
     {
       id: 'b', totalMarks: 50, weight: 1, attainmentMark: null, // not configured
-      assessmentCOs: [{ courseOutcomeId: 'co1', markShare: 1 }],
-      marks: [{ studentId: 's', marksObtained: 25, isAbsent: false }],
+      assessmentCOs: [{ courseOutcomeId: 'co1', coMarks: 50 }],
+      marks: [{ studentId: 's', courseOutcomeId: 'co1', marksObtained: 25, isAbsent: false }],
     },
   ];
   const r = computeStudentCoAttainment({ studentId: 's', courseOutcome: co1, assessments, policy });
@@ -176,19 +176,58 @@ test('partial explicit marks fall back to policy rather than mixing', () => {
   assert.equal(r.attained, false);
 });
 
-test('markShare splits an assessment across several COs', () => {
+test('one assessment, per-CO marks: uneven performance is recorded honestly', () => {
+  // A 30-mark mid-term: Q1-Q2 test CO1 (12), Q3 tests CO2 (10), Q4 tests CO3 (8).
+  // The student aced CO1 and struggled on CO3. Under the old markShare model
+  // their single 24/30 was multiplied by each share, crediting 80% on all three.
+  const co3 = { id: 'co3' };
   const assessments = [{
-    id: 'mid', totalMarks: 100, weight: 1, attainmentMark: null,
+    id: 'mid', totalMarks: 30, weight: 1, attainmentMark: null,
     assessmentCOs: [
-      { courseOutcomeId: 'co1', markShare: 0.4 },
-      { courseOutcomeId: 'co2', markShare: 0.6 },
+      { courseOutcomeId: 'co1', coMarks: 12 },
+      { courseOutcomeId: 'co2', coMarks: 10 },
+      { courseOutcomeId: 'co3', coMarks: 8 },
     ],
-    marks: [{ studentId: 's', marksObtained: 70, isAbsent: false }],
+    marks: [
+      { studentId: 's', courseOutcomeId: 'co1', marksObtained: 12, isAbsent: false },
+      { studentId: 's', courseOutcomeId: 'co2', marksObtained: 9,  isAbsent: false },
+      { studentId: 's', courseOutcomeId: 'co3', marksObtained: 3,  isAbsent: false },
+    ],
+  }];
+
+  const a = computeStudentCoAttainment({ studentId: 's', courseOutcome: co1, assessments, policy });
+  const b = computeStudentCoAttainment({ studentId: 's', courseOutcome: co2, assessments, policy });
+  const c = computeStudentCoAttainment({ studentId: 's', courseOutcome: co3, assessments, policy });
+
+  assert.equal(a.percentage, 100, '12/12 on the CO1 questions');
+  assert.equal(b.percentage, 90,  '9/10 on the CO2 questions');
+  assert.equal(c.percentage, 37.5,'3/8 on the CO3 questions');
+
+  assert.equal(a.attained, true);
+  assert.equal(b.attained, true);
+  assert.equal(c.attained, false, 'the weak section fails on its own merits');
+
+  // Total still reconciles to the paper: 12+9+3 = 24 of 30.
+  const total = assessments[0].marks.reduce((t, m) => t + m.marksObtained, 0);
+  assert.equal(total, 24);
+});
+
+test('a CO section skipped within a sat paper is excluded, not zeroed', () => {
+  const assessments = [{
+    id: 'mid', totalMarks: 20, weight: 1, attainmentMark: null,
+    assessmentCOs: [
+      { courseOutcomeId: 'co1', coMarks: 10 },
+      { courseOutcomeId: 'co2', coMarks: 10 },
+    ],
+    marks: [
+      { studentId: 's', courseOutcomeId: 'co1', marksObtained: 8, isAbsent: false },
+      { studentId: 's', courseOutcomeId: 'co2', marksObtained: 0, isAbsent: true },
+    ],
   }];
   const a = computeStudentCoAttainment({ studentId: 's', courseOutcome: co1, assessments, policy });
   const b = computeStudentCoAttainment({ studentId: 's', courseOutcome: co2, assessments, policy });
-  assert.equal(a.percentage, 70);
-  assert.equal(b.percentage, 70);
+  assert.equal(a.percentage, 80);
+  assert.equal(b, null, 'no usable evidence for co2');
 });
 
 test('thin coverage is flagged even when the CO passes', () => {

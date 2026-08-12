@@ -155,21 +155,225 @@ const getAssessments = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/**
+ * Validates the CO mark allocation for an assessment.
+ *
+ * Body shape: courseOutcomes: [{ courseOutcomeId, coMarks }, ...]
+ * The allocations must sum to totalMarks, because they describe how the
+ * question paper is divided. A 30-mark mid-term with 12+10+8 across three COs
+ * is the whole paper; 12+10 would mean 8 marks are assessed against nothing.
+ *
+ * Also accepts the legacy courseOutcomeIds array for a single-CO assessment,
+ * where the whole paper belongs to one CO.
+ */
+function normaliseCourseOutcomes(body, totalMarks) {
+  let list = body.courseOutcomes;
+
+  if (!list && Array.isArray(body.courseOutcomeIds)) {
+    const ids = body.courseOutcomeIds;
+    if (ids.length === 1) {
+      list = [{ courseOutcomeId: ids[0], coMarks: totalMarks }];
+    } else if (ids.length > 1) {
+      return {
+        error:
+          'This assessment covers more than one CO, so each needs its own mark allocation. Send courseOutcomes: [{ courseOutcomeId, coMarks }] instead of a bare id list.',
+      };
+    }
+  }
+
+  if (!Array.isArray(list) || !list.length) {
+    return { error: 'At least one course outcome is required' };
+  }
+
+  const seen = new Set();
+  let sum = 0;
+  const clean = [];
+
+  for (const row of list) {
+    const coId = row.courseOutcomeId;
+    const marks = Number(row.coMarks);
+
+    if (!coId) return { error: 'Each entry needs a courseOutcomeId' };
+    if (seen.has(coId)) return { error: 'The same CO appears twice in this assessment' };
+    seen.add(coId);
+
+    if (!Number.isFinite(marks) || marks <= 0) {
+      return { error: `Mark allocation for each CO must be greater than zero` };
+    }
+    sum += marks;
+    clean.push({ courseOutcomeId: coId, coMarks: marks });
+  }
+
+  // Float tolerance: half-mark allocations are common.
+  if (Math.abs(sum - totalMarks) > 0.001) {
+    return {
+      error: `CO allocations total ${sum} but the assessment is out of ${totalMarks}. They must match, otherwise some marks are assessed against no outcome.`,
+    };
+  }
+
+  return { list: clean };
+}
+
 const createAssessment = async (req, res, next) => {
   try {
     const { courseId } = req.params;
     await assertFacultyOwns(req.user, courseId);
-    const { type, title, totalMarks, courseOutcomeIds } = req.body;
+    const { type, title, totalMarks, weight, method, conductedOn } = req.body;
+
+    const total = parseFloat(totalMarks);
+    if (!Number.isFinite(total) || total <= 0) {
+      return res.status(400).json({ status: 'error', error: 'totalMarks must be greater than zero' });
+    }
+
+    const { list, error } = normaliseCourseOutcomes(req.body, total);
+    if (error) return res.status(400).json({ status: 'error', error });
+
+    // Every CO must belong to this course. Without this a faculty member could
+    // attach another course's outcome and quietly corrupt its attainment.
+    const owned = await prisma.courseOutcome.findMany({
+      where: { courseId, deletedAt: null, id: { in: list.map((x) => x.courseOutcomeId) } },
+      select: { id: true },
+    });
+    if (owned.length !== list.length) {
+      return res.status(400).json({ status: 'error', error: 'One or more COs do not belong to this course' });
+    }
+
     const item = await prisma.assessment.create({
       data: {
-        courseId, type, title,
-        totalMarks: parseFloat(totalMarks),
-        weight: 0, // weight removed from UI but field exists in schema
-        assessmentCOs: { create: (courseOutcomeIds || []).map(coId => ({ courseOutcomeId: coId })) },
+        courseId,
+        type,
+        title,
+        totalMarks: total,
+        weight: weight != null ? parseFloat(weight) : 1,
+        method: method === 'INDIRECT' ? 'INDIRECT' : 'DIRECT',
+        conductedOn: conductedOn ? new Date(conductedOn) : null,
+        assessmentCOs: { create: list },
       },
+      include: { assessmentCOs: { include: { courseOutcome: { select: { code: true, title: true } } } } },
+    });
+
+    res.status(201).json({ status: 'success', data: item });
+  } catch (err) { next(err); }
+};
+
+/**
+ * Edit an assessment, including which COs it covers.
+ *
+ * Changing the CO links after marks exist is the dangerous case. Marks are keyed
+ * on (assessment, student, CO), so dropping a CO orphans its marks and adding
+ * one leaves a section with no marks at all. Rather than silently discarding
+ * data, this refuses unless the caller passes force=true, and then deletes the
+ * orphaned marks inside the same transaction and recomputes.
+ */
+const updateAssessment = async (req, res, next) => {
+  try {
+    const { courseId, id } = req.params;
+    await assertFacultyOwns(req.user, courseId);
+
+    const existing = await prisma.assessment.findFirst({
+      where: { id, courseId, deletedAt: null },
       include: { assessmentCOs: true },
     });
-    res.status(201).json({ status: 'success', data: item });
+    if (!existing) return res.status(404).json({ status: 'error', error: 'Assessment not found' });
+
+    const { type, title, totalMarks, weight, method, conductedOn, force } = req.body;
+    const total = totalMarks != null ? parseFloat(totalMarks) : existing.totalMarks;
+    if (!Number.isFinite(total) || total <= 0) {
+      return res.status(400).json({ status: 'error', error: 'totalMarks must be greater than zero' });
+    }
+
+    const wantsCoChange = req.body.courseOutcomes != null || req.body.courseOutcomeIds != null;
+    let list = existing.assessmentCOs.map((a) => ({ courseOutcomeId: a.courseOutcomeId, coMarks: a.coMarks }));
+
+    if (wantsCoChange) {
+      const parsed = normaliseCourseOutcomes(req.body, total);
+      if (parsed.error) return res.status(400).json({ status: 'error', error: parsed.error });
+      list = parsed.list;
+
+      const owned = await prisma.courseOutcome.findMany({
+        where: { courseId, deletedAt: null, id: { in: list.map((x) => x.courseOutcomeId) } },
+        select: { id: true },
+      });
+      if (owned.length !== list.length) {
+        return res.status(400).json({ status: 'error', error: 'One or more COs do not belong to this course' });
+      }
+    } else if (totalMarks != null && Math.abs(total - existing.totalMarks) > 0.001) {
+      // Total changed but the allocations did not, so they no longer add up.
+      const sum = list.reduce((t, x) => t + x.coMarks, 0);
+      if (Math.abs(sum - total) > 0.001) {
+        return res.status(400).json({
+          status: 'error',
+          error: `Changing totalMarks to ${total} leaves the CO allocations summing to ${sum}. Send courseOutcomes with the new split.`,
+        });
+      }
+    }
+
+    const keptCoIds = new Set(list.map((x) => x.courseOutcomeId));
+    const removedCoIds = existing.assessmentCOs
+      .map((a) => a.courseOutcomeId)
+      .filter((coId) => !keptCoIds.has(coId));
+
+    // Marks that would be orphaned: those on a CO being removed, plus any mark
+    // now exceeding a reduced allocation.
+    const orphanCount = removedCoIds.length
+      ? await prisma.mark.count({ where: { assessmentId: id, courseOutcomeId: { in: removedCoIds } } })
+      : 0;
+
+    const overCap = await prisma.mark.findMany({
+      where: { assessmentId: id, courseOutcomeId: { in: [...keptCoIds] } },
+      select: { id: true, courseOutcomeId: true, marksObtained: true },
+    });
+    const capByCo = Object.fromEntries(list.map((x) => [x.courseOutcomeId, x.coMarks]));
+    const exceeding = overCap.filter((m) => m.marksObtained > (capByCo[m.courseOutcomeId] ?? Infinity));
+
+    if ((orphanCount || exceeding.length) && !force) {
+      return res.status(409).json({
+        status: 'error',
+        error: 'This change would discard or invalidate existing marks.',
+        impact: {
+          marksOnRemovedCos: orphanCount,
+          marksExceedingNewAllocation: exceeding.length,
+          removedCoIds,
+        },
+        hint: 'Re-send with force: true to proceed. The affected marks will be deleted and attainment recomputed.',
+      });
+    }
+
+    await prisma.$transaction([
+      ...(removedCoIds.length
+        ? [prisma.mark.deleteMany({ where: { assessmentId: id, courseOutcomeId: { in: removedCoIds } } })]
+        : []),
+      ...(exceeding.length
+        ? [prisma.mark.deleteMany({ where: { id: { in: exceeding.map((m) => m.id) } } })]
+        : []),
+      prisma.assessmentCO.deleteMany({ where: { assessmentId: id } }),
+      prisma.assessment.update({
+        where: { id },
+        data: {
+          ...(type != null ? { type } : {}),
+          ...(title != null ? { title } : {}),
+          totalMarks: total,
+          ...(weight != null ? { weight: parseFloat(weight) } : {}),
+          ...(method != null ? { method: method === 'INDIRECT' ? 'INDIRECT' : 'DIRECT' } : {}),
+          ...(conductedOn !== undefined ? { conductedOn: conductedOn ? new Date(conductedOn) : null } : {}),
+          assessmentCOs: { create: list },
+        },
+      }),
+    ]);
+
+    // Attainment reflects the old CO links until this runs.
+    await recomputeAttainmentForCourse(courseId, null, req.user.institutionId);
+
+    const updated = await prisma.assessment.findUnique({
+      where: { id },
+      include: { assessmentCOs: { include: { courseOutcome: { select: { code: true, title: true } } } } },
+    });
+
+    res.json({
+      status: 'success',
+      data: updated,
+      discarded: orphanCount + exceeding.length || undefined,
+    });
   } catch (err) { next(err); }
 };
 
@@ -206,57 +410,148 @@ const getMarks = async (req, res, next) => {
       orderBy: { institutionalId: 'asc' },
     });
 
-    const existingMarks = await prisma.mark.findMany({ where: { assessmentId } });
-    const markMap = Object.fromEntries(existingMarks.map(m => [m.studentId, m.marksObtained]));
+    // Marks are per (student, CO). The grid is one row per student with a
+    // column per CO the assessment covers, plus a row total.
+    const [assessmentCOs, existingMarks] = await Promise.all([
+      prisma.assessmentCO.findMany({
+        where: { assessmentId },
+        include: { courseOutcome: { select: { id: true, code: true, title: true } } },
+        orderBy: { courseOutcome: { code: 'asc' } },
+      }),
+      prisma.mark.findMany({ where: { assessmentId } }),
+    ]);
 
-    const data = students.map(s => ({
-      studentId:       s.id,
-      institutionalId: s.institutionalId || '',
-      name:            `${s.firstName} ${s.lastName}`,
-      marksObtained:   markMap[s.id] ?? null,
+    const byStudent = {};
+    for (const m of existingMarks) {
+      (byStudent[m.studentId] ||= {})[m.courseOutcomeId] = m;
+    }
+
+    const columns = assessmentCOs.map((ac) => ({
+      courseOutcomeId: ac.courseOutcomeId,
+      code: ac.courseOutcome.code,
+      title: ac.courseOutcome.title,
+      coMarks: ac.coMarks,
     }));
 
-    res.json({ status: 'success', data });
+    const data = students.map((s) => {
+      const mine = byStudent[s.id] || {};
+      const cells = columns.map((c) => {
+        const m = mine[c.courseOutcomeId];
+        return {
+          courseOutcomeId: c.courseOutcomeId,
+          code: c.code,
+          maxMarks: c.coMarks,
+          marksObtained: m && !m.isAbsent ? m.marksObtained : null,
+          isAbsent: m ? m.isAbsent : false,
+        };
+      });
+      const scored = cells.filter((c) => c.marksObtained != null);
+      return {
+        studentId: s.id,
+        institutionalId: s.institutionalId || '',
+        name: `${s.firstName} ${s.lastName}`,
+        section: s.section || null,
+        marks: cells,
+        // null rather than 0 when nothing is entered, so an unmarked script does
+        // not read as a zero on the grid.
+        total: scored.length ? scored.reduce((t, c) => t + c.marksObtained, 0) : null,
+      };
+    });
+
+    res.json({
+      status: 'success',
+      data: { columns, totalMarks: columns.reduce((t, c) => t + c.coMarks, 0), students: data },
+    });
   } catch (err) { next(err); }
 };
 
+/**
+ * Save marks.
+ *
+ * Payload: marks: [{ studentId, courseOutcomeId, marksObtained, isAbsent }]
+ * One entry per student per CO. Each is capped by that CO's own allocation, not
+ * by the paper total: 9 out of a 10-mark CO2 section is valid even though the
+ * paper is out of 30.
+ */
 const saveMarks = async (req, res, next) => {
   try {
     const { assessmentId } = req.params;
     const { marks } = req.body;
-    const assessment = await prisma.assessment.findUnique({ where: { id: assessmentId } });
+
+    if (!Array.isArray(marks) || !marks.length) {
+      return res.status(400).json({ status: 'error', error: 'marks array is required' });
+    }
+
+    const assessment = await prisma.assessment.findUnique({
+      where: { id: assessmentId },
+      include: { assessmentCOs: true },
+    });
     if (!assessment) return res.status(404).json({ status: 'error', error: 'Assessment not found' });
 
-    const invalid = marks.filter(m => m.marksObtained < 0 || m.marksObtained > assessment.totalMarks);
-    if (invalid.length) {
-      return res.status(400).json({ status: 'error', error: `Marks out of range [0, ${assessment.totalMarks}]` });
+    const capByCo = Object.fromEntries(assessment.assessmentCOs.map((a) => [a.courseOutcomeId, a.coMarks]));
+
+    const problems = [];
+    for (const m of marks) {
+      if (!m.studentId || !m.courseOutcomeId) {
+        problems.push('every entry needs studentId and courseOutcomeId');
+        break;
+      }
+      const cap = capByCo[m.courseOutcomeId];
+      if (cap == null) {
+        problems.push(`CO ${m.courseOutcomeId} is not part of this assessment`);
+        continue;
+      }
+      if (m.isAbsent) continue;
+      const v = Number(m.marksObtained);
+      if (!Number.isFinite(v) || v < 0 || v > cap) {
+        problems.push(`mark ${m.marksObtained} is outside [0, ${cap}] for that CO`);
+      }
+    }
+    if (problems.length) {
+      return res.status(400).json({ status: 'error', error: problems[0], problems: problems.slice(0, 10) });
     }
 
     const prevMarks = await prisma.mark.findMany({ where: { assessmentId } });
-    const prevMap = Object.fromEntries(prevMarks.map(m => [m.studentId, m.marksObtained]));
+    const prevMap = Object.fromEntries(
+      prevMarks.map((m) => [`${m.studentId}:${m.courseOutcomeId}`, m.marksObtained])
+    );
 
     await prisma.$transaction([
-      ...marks.map(({ studentId, marksObtained }) =>
+      ...marks.map(({ studentId, courseOutcomeId, marksObtained, isAbsent }) =>
         prisma.mark.upsert({
-          where: { assessmentId_studentId: { assessmentId, studentId } },
-          create: { assessmentId, studentId, marksObtained },
-          update: { marksObtained },
+          where: {
+            assessmentId_studentId_courseOutcomeId: { assessmentId, studentId, courseOutcomeId },
+          },
+          create: {
+            assessmentId,
+            studentId,
+            courseOutcomeId,
+            marksObtained: isAbsent ? 0 : Number(marksObtained),
+            isAbsent: !!isAbsent,
+          },
+          update: {
+            marksObtained: isAbsent ? 0 : Number(marksObtained),
+            isAbsent: !!isAbsent,
+          },
         })
       ),
       ...marks
-        .filter(m => prevMap[m.studentId] !== m.marksObtained)
-        .map(m => prisma.markAuditLog.create({
-          data: {
-            assessmentId, studentId: m.studentId,
-            changedById: req.user.userId,
-            beforeValue: prevMap[m.studentId] ?? null,
-            afterValue: m.marksObtained,
-          },
-        })),
+        .filter((m) => prevMap[`${m.studentId}:${m.courseOutcomeId}`] !== Number(m.marksObtained))
+        .map((m) =>
+          prisma.markAuditLog.create({
+            data: {
+              assessmentId,
+              studentId: m.studentId,
+              changedById: req.user.userId,
+              beforeValue: prevMap[`${m.studentId}:${m.courseOutcomeId}`] ?? null,
+              afterValue: m.isAbsent ? null : Number(m.marksObtained),
+            },
+          })
+        ),
     ]);
 
     await recomputeAttainmentForCourse(assessment.courseId, null, req.user.institutionId);
-    res.json({ status: 'success', data: { message: `${marks.length} marks saved` } });
+    res.json({ status: 'success', data: { message: `${marks.length} mark entries saved` } });
   } catch (err) { next(err); }
 };
 
@@ -413,9 +708,13 @@ const updateAssessmentAttainmentMark = async (req, res, next) => {
     if (parseFloat(attainmentMark) > assessment.totalMarks) {
       return res.status(400).json({ status: 'error', error: 'Attainment mark cannot exceed total marks' });
     }
+    // Writes attainmentMark, not weight. The original version stored the pass
+    // mark in the weight column, which made real weighting impossible and, now
+    // that weight is a genuine weight again, would silently distort every CO
+    // figure the assessment feeds.
     await prisma.assessment.update({
       where: { id: assessmentId },
-      data: { weight: parseFloat(attainmentMark) },
+      data: { attainmentMark: parseFloat(attainmentMark) },
     });
     await recomputeAttainmentForCourse(courseId, null, req.user.institutionId);
     res.json({ status: 'success', data: { message: 'Attainment mark updated' } });
@@ -426,7 +725,7 @@ module.exports = {
   getMyCourses,
   getCourseOutcomes, createCourseOutcome, updateCourseOutcome, deleteCourseOutcome,
   getMapping, saveMapping,
-  getAssessments, createAssessment, deleteAssessment,
+  getAssessments, createAssessment, updateAssessment, deleteAssessment,
   getMarks, saveMarks,
   getCourseAttainment,
   getCourseStudents,

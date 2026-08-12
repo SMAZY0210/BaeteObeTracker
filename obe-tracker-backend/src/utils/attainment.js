@@ -67,18 +67,21 @@ function levelFor(percentage, policy) {
 /**
  * Marks attributable to one CO from one assessment.
  *
- * An assessment can carry more than one CO. markShare says how much of the
- * paper belongs to this CO (0.4 for a mid-term where CO2 is worth 40% of the
- * questions). Default 1 keeps single-CO assessments behaving as before.
+ * coMarks is the absolute allocation from the question paper: 12 marks of a
+ * 30-mark mid-term. Falls back to the full total when an assessment carries a
+ * single CO and nobody bothered to set it.
+ *
+ * This replaces the old markShare fraction, which multiplied one whole-paper
+ * score by a ratio and so credited a student the same percentage on every CO
+ * the paper touched. Marks are now recorded per CO, so the real per-section
+ * score is used instead of a derived one.
  */
 function coSliceOf(assessment, assessmentCO) {
-  const share = assessmentCO?.markShare ?? 1;
+  const possible = assessmentCO?.coMarks > 0 ? assessmentCO.coMarks : assessment.totalMarks;
+  const ratio = assessment.totalMarks > 0 ? possible / assessment.totalMarks : 1;
   return {
-    possible: assessment.totalMarks * share,
-    passMark:
-      assessment.attainmentMark != null
-        ? assessment.attainmentMark * share
-        : null,
+    possible,
+    passMark: assessment.attainmentMark != null ? assessment.attainmentMark * ratio : null,
   };
 }
 
@@ -106,7 +109,13 @@ function computeStudentCoAttainment({ studentId, courseOutcome, assessments, pol
   let counted = 0;
 
   for (const a of linked) {
-    const mark = a.marks?.find((mk) => mk.studentId === studentId);
+    // Marks are keyed on (assessment, student, CO). A student absent from the
+    // paper has no row at all; a student who sat it but skipped this CO's
+    // section has a row with isAbsent set. Both drop out rather than scoring
+    // zero, because an absence is missing evidence, not evidence of failure.
+    const mark = a.marks?.find(
+      (mk) => mk.studentId === studentId && mk.courseOutcomeId === courseOutcome.id
+    );
     if (!mark || mark.isAbsent) continue;
 
     const aco = a.assessmentCOs.find((x) => x.courseOutcomeId === courseOutcome.id);
@@ -114,9 +123,10 @@ function computeStudentCoAttainment({ studentId, courseOutcome, assessments, pol
     if (slice.possible <= 0) continue;
 
     const w = a.weight > 0 ? a.weight : 1;
-    const share = aco?.markShare ?? 1;
 
-    weightedObtained += mark.marksObtained * share * w;
+    // marksObtained is already this CO's score out of slice.possible. No
+    // fraction is applied: that was the bug.
+    weightedObtained += mark.marksObtained * w;
     weightedPossible += slice.possible * w;
     counted += 1;
 

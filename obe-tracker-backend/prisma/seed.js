@@ -178,10 +178,29 @@ async function main() {
     },
   });
 
+  // ── Curriculum version ────────────────────────────────────────
+  // Outcomes belong to a version, not to the programme. A 2027 revision creates
+  // v2 and leaves v1 alone, so a batch that graduated under v1 keeps being
+  // measured against the outcomes it was actually taught.
+  const curriculumV1 = await prisma.curriculumVersion.upsert({
+    where: { programId_version: { programId: progBICT.id, version: 1 } },
+    update: { label: 'BICT Curriculum 2022', isCurrent: true },
+    create: {
+      programId: progBICT.id,
+      version: 1,
+      label: 'BICT Curriculum 2022',
+      description:
+        'Initial outcome set, aligned to BAETE v3.0 (GAPC v4). All seeded batches are assessed against this version.',
+      effectiveFrom: new Date('2022-01-01'),
+      isCurrent: true,
+    },
+  });
+  console.log(`✓ Curriculum version v${curriculumV1.version} (${curriculumV1.label})`);
+
   const poMap = {};
   for (const fo of framework.frameworkOutcomes) {
     const r = await prisma.programOutcome.upsert({
-      where: { programId_code: { programId: progBICT.id, code: fo.code } },
+      where: { curriculumVersionId_code: { curriculumVersionId: curriculumV1.id, code: fo.code } },
       update: {
         title: fo.title,
         description: fo.statement,
@@ -189,6 +208,7 @@ async function main() {
       },
       create: {
         programId: progBICT.id,
+        curriculumVersionId: curriculumV1.id,
         frameworkOutcomeId: fo.id,
         code: fo.code,
         title: fo.title,
@@ -229,6 +249,10 @@ async function main() {
         startDate: new Date(b.start),
         endDate: new Date(b.end),
         status: 'ACTIVE',
+        // ICT batches follow the BICT curriculum. The BBA batch has no
+        // programme, so it has no version either, which is the correct answer
+        // rather than a default.
+        curriculumVersionId: b.deptId === deptICT.id ? curriculumV1.id : null,
       },
       create: {
         id: b.id,
@@ -238,6 +262,7 @@ async function main() {
         startDate: new Date(b.start),
         endDate: new Date(b.end),
         status: 'ACTIVE',
+        curriculumVersionId: b.deptId === deptICT.id ? curriculumV1.id : null,
       },
     });
   }
@@ -703,41 +728,72 @@ async function main() {
   });
   const [co1, co2, co3] = sreCOs;
 
-  // ── ICE-3207 SRE: 3 assessments only ──────────────────────────
-  // Total marks per CO:
-  //   CO1: Quiz 1 (20) + Mid Term (30 of 60) = 50 total  → attainment = floor(50*0.6) = 30
-  //   CO2: Quiz 2 (20) + Mid Term (30 of 60) = 50 total  → attainment = floor(50*0.6) = 30
-  //   CO3: Assignment (40) + Mid Term (0 of 60) = 40      → attainment = floor(40*0.6) = 24
-  // Mid Term maps to all 3 COs; Quiz 1 → CO1; Quiz 2 → CO2; Assignment → CO3
+  // ── ICE-3207 SRE: 4 assessments ───────────────────────────────
+  // Each assessment declares how its marks divide between the COs it tests,
+  // mirroring how the question paper is actually written. The mid-term is one
+  // paper of 60 marks whose questions split 24/24/12, and marks are recorded
+  // against each section rather than derived from a single total. The previous
+  // seed mapped the mid-term to all three COs with no allocation, so the engine
+  // credited every student the same percentage on all three.
+  //
+  // Marks available per CO:
+  //   CO1: Quiz 1 (20) + Mid Term CO1 section (24) = 44
+  //   CO2: Quiz 2 (20) + Mid Term CO2 section (24) = 44
+  //   CO3: Assignment (40) + Mid Term CO3 section (12) = 52
 
   const sreAssessmentDefs = [
-    { title: 'Quiz 1',    type: 'QUIZ',       totalMarks: 20,  cos: [co1] },
-    { title: 'Quiz 2',    type: 'QUIZ',       totalMarks: 20,  cos: [co2] },
-    { title: 'Assignment',type: 'ASSIGNMENT', totalMarks: 40,  cos: [co3] },
-    { title: 'Mid Term',  type: 'MID_TERM',   totalMarks: 60,  cos: [co1, co2, co3] },
+    { title: 'Quiz 1',     type: 'QUIZ',       totalMarks: 20, weight: 1, alloc: [[co1, 20]] },
+    { title: 'Quiz 2',     type: 'QUIZ',       totalMarks: 20, weight: 1, alloc: [[co2, 20]] },
+    { title: 'Assignment', type: 'ASSIGNMENT', totalMarks: 40, weight: 2, alloc: [[co3, 40]] },
+    { title: 'Mid Term',   type: 'MID_TERM',   totalMarks: 60, weight: 3, alloc: [[co1, 24], [co2, 24], [co3, 12]] },
   ];
 
-  const sreAssessments = [];
-  for (const def of sreAssessmentDefs) {
-    const ass = await prisma.assessment.upsert({
-      where: { id: 'seed-ass-sre-' + def.title.toLowerCase().replace(/[^a-z0-9]/g, '-') },
-      update: { totalMarks: def.totalMarks, title: def.title },
-      create: {
-        id: 'seed-ass-sre-' + def.title.toLowerCase().replace(/[^a-z0-9]/g, '-'),
-        courseId: sre.id, type: def.type, title: def.title,
-        totalMarks: def.totalMarks, weight: 0,
-      },
-    });
-    for (const co of def.cos) {
-      await prisma.assessmentCO.upsert({
-        where: { assessmentId_courseOutcomeId: { assessmentId: ass.id, courseOutcomeId: co.id } },
-        update: {},
-        create: { assessmentId: ass.id, courseOutcomeId: co.id },
+  // Shared builder. Also clears CO links that are no longer in the definition:
+  // upsert alone would leave the old unallocated links from a previous seed run
+  // sitting alongside the new ones.
+  async function seedAssessments(prefix, courseId, defs, label) {
+    const out = [];
+    for (const def of defs) {
+      const id = `seed-ass-${prefix}-` + def.title.toLowerCase().replace(/[^a-z0-9]/g, '-');
+      const sum = def.alloc.reduce((t, [, m]) => t + m, 0);
+      if (Math.abs(sum - def.totalMarks) > 0.001) {
+        throw new Error(`${label} "${def.title}": CO allocations total ${sum} but the paper is out of ${def.totalMarks}`);
+      }
+
+      const ass = await prisma.assessment.upsert({
+        where: { id },
+        update: { totalMarks: def.totalMarks, title: def.title, weight: def.weight ?? 1, method: 'DIRECT' },
+        create: {
+          id,
+          courseId,
+          type: def.type,
+          title: def.title,
+          totalMarks: def.totalMarks,
+          weight: def.weight ?? 1,
+          method: 'DIRECT',
+        },
       });
+
+      const keep = def.alloc.map(([co]) => co.id);
+      await prisma.assessmentCO.deleteMany({
+        where: { assessmentId: ass.id, courseOutcomeId: { notIn: keep } },
+      });
+
+      for (const [co, coMarks] of def.alloc) {
+        await prisma.assessmentCO.upsert({
+          where: { assessmentId_courseOutcomeId: { assessmentId: ass.id, courseOutcomeId: co.id } },
+          update: { coMarks },
+          create: { assessmentId: ass.id, courseOutcomeId: co.id, coMarks },
+        });
+      }
+
+      out.push({ ...ass, alloc: def.alloc.map(([co, m]) => ({ courseOutcomeId: co.id, coMarks: m })) });
     }
-    sreAssessments.push({ ...ass, coIds: def.cos.map(c => c.id) });
+    console.log(`  ✓ ${defs.length} assessments created for ${label}`);
+    return out;
   }
-  console.log('  ✓ 4 assessments created for ICE-3207 (SRE)');
+
+  const sreAssessments = await seedAssessments('sre', sre.id, sreAssessmentDefs, 'ICE-3207 (SRE)');
 
   // ── ICE-3205 Web Technologies: 3 assessments only ──────────────
   const webCOs = await prisma.courseOutcome.findMany({
@@ -747,33 +803,14 @@ async function main() {
   const [wco1, wco2, wco3] = webCOs;
 
   const webAssessmentDefs = [
-    { title: 'Quiz 1',    type: 'QUIZ',       totalMarks: 20,  cos: [wco1] },
-    { title: 'Quiz 2',    type: 'QUIZ',       totalMarks: 20,  cos: [wco2] },
-    { title: 'Assignment',type: 'ASSIGNMENT', totalMarks: 40,  cos: [wco3] },
-    { title: 'Mid Term',  type: 'MID_TERM',   totalMarks: 60,  cos: [wco1, wco2, wco3] },
+    { title: 'Quiz 1',     type: 'QUIZ',       totalMarks: 20, weight: 1, alloc: [[wco1, 20]] },
+    { title: 'Quiz 2',     type: 'QUIZ',       totalMarks: 20, weight: 1, alloc: [[wco2, 20]] },
+    { title: 'Assignment', type: 'ASSIGNMENT', totalMarks: 40, weight: 2, alloc: [[wco3, 40]] },
+    // Security-heavy paper: CO3 carries more of it than the other two.
+    { title: 'Mid Term',   type: 'MID_TERM',   totalMarks: 60, weight: 3, alloc: [[wco1, 20], [wco2, 20], [wco3, 20]] },
   ];
 
-  const webAssessments = [];
-  for (const def of webAssessmentDefs) {
-    const ass = await prisma.assessment.upsert({
-      where: { id: 'seed-ass-web-' + def.title.toLowerCase().replace(/[^a-z0-9]/g, '-') },
-      update: { totalMarks: def.totalMarks, title: def.title },
-      create: {
-        id: 'seed-ass-web-' + def.title.toLowerCase().replace(/[^a-z0-9]/g, '-'),
-        courseId: web.id, type: def.type, title: def.title,
-        totalMarks: def.totalMarks, weight: 0,
-      },
-    });
-    for (const co of def.cos) {
-      await prisma.assessmentCO.upsert({
-        where: { assessmentId_courseOutcomeId: { assessmentId: ass.id, courseOutcomeId: co.id } },
-        update: {},
-        create: { assessmentId: ass.id, courseOutcomeId: co.id },
-      });
-    }
-    webAssessments.push({ ...ass, coIds: def.cos.map(c => c.id) });
-  }
-  console.log('  ✓ 4 assessments created for ICE-3205 (Web Technologies)');
+  const webAssessments = await seedAssessments('web', web.id, webAssessmentDefs, 'ICE-3205 (Web Technologies)');
 
   // ── Seeded random helper ────────────────────────────────────────
   function seededRandom(seed) {
@@ -796,45 +833,74 @@ async function main() {
     }
   });
 
-  // ── Insert SRE marks (integer values) ──────────────────────────
-  let sreMarkCount = 0;
-  for (const ass of sreAssessments) {
-    for (const stu of students) {
-      const rng = seededRandom(stu.id.charCodeAt(0) * 31 + ass.id.charCodeAt(0) * 17);
-      const base = studentAbility[stu.id];
-      const noise = (rng() - 0.5) * 0.14;
-      const pct = Math.min(1.0, Math.max(0.10, base + noise));
-      // Integer marks only
-      const marksObtained = Math.floor(pct * ass.totalMarks);
-      await prisma.mark.upsert({
-        where: { assessmentId_studentId: { assessmentId: ass.id, studentId: stu.id } },
-        update: { marksObtained },
-        create: { assessmentId: ass.id, studentId: stu.id, marksObtained },
-      });
-      sreMarkCount++;
+  // ── Marks, one row per student per CO section ──────────────────
+  //
+  // Per-CO variation is the point of the exercise. A student is not uniformly
+  // good: someone strong on requirements analysis may be weak on validation.
+  // The old seed gave one figure per paper, which the engine then split evenly
+  // and so produced identical percentages on every CO the paper touched. Here
+  // each student carries a per-CO offset, so the demo data actually exercises
+  // the case the model was rebuilt for.
+  // Hash the whole string. Seeding off one character of a cuid gives every
+  // student the same number, because cuids share their leading characters, and
+  // the generated "variation" was identical for all 65 students.
+  function hashStr(str) {
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
     }
+    return Math.abs(h);
   }
-  console.log(`  ✓ ${sreMarkCount} integer marks inserted for ICE-3207`);
 
-  // ── Insert Web marks (integer values) ──────────────────────────
-  let webMarkCount = 0;
-  for (const ass of webAssessments) {
-    for (const stu of students) {
-      const rng = seededRandom(stu.id.charCodeAt(0) * 53 + ass.id.charCodeAt(0) * 23 + 9999);
-      const base = studentAbility[stu.id];
-      const bias = 0.03; // Web marks slightly higher on average
-      const noise = (rng() - 0.5) * 0.12;
-      const pct = Math.min(1.0, Math.max(0.10, base + bias + noise));
-      const marksObtained = Math.floor(pct * ass.totalMarks);
-      await prisma.mark.upsert({
-        where: { assessmentId_studentId: { assessmentId: ass.id, studentId: stu.id } },
-        update: { marksObtained },
-        create: { assessmentId: ass.id, studentId: stu.id, marksObtained },
-      });
-      webMarkCount++;
+  async function seedMarks(assessments, salt, bias, label) {
+    let count = 0;
+    for (const ass of assessments) {
+      for (const stu of students) {
+        for (const a of ass.alloc) {
+          const rng = seededRandom(hashStr(stu.id + ass.id + a.courseOutcomeId) + salt);
+
+          // Per-CO strength: roughly +/- 12 points around the student's overall
+          // ability, and stable across assessments for the same CO, because a
+          // student weak on validation is weak on it in the quiz and the final.
+          const coOffset = (seededRandom(hashStr(stu.id + a.courseOutcomeId))() - 0.5) * 0.24;
+          const noise = (rng() - 0.5) * 0.12;
+          const pct = Math.min(1.0, Math.max(0.05, studentAbility[stu.id] + bias + coOffset + noise));
+
+          // A small number of students miss a section. Absent is recorded as
+          // absent, not as zero, so the engine excludes it rather than dragging
+          // the average down with evidence that does not exist.
+          const isAbsent = rng() < 0.02;
+
+          await prisma.mark.upsert({
+            where: {
+              assessmentId_studentId_courseOutcomeId: {
+                assessmentId: ass.id,
+                studentId: stu.id,
+                courseOutcomeId: a.courseOutcomeId,
+              },
+            },
+            update: { marksObtained: isAbsent ? 0 : Math.round(pct * a.coMarks), isAbsent },
+            create: {
+              assessmentId: ass.id,
+              studentId: stu.id,
+              courseOutcomeId: a.courseOutcomeId,
+              marksObtained: isAbsent ? 0 : Math.round(pct * a.coMarks),
+              isAbsent,
+            },
+          });
+          count++;
+        }
+      }
     }
+    console.log(`  ✓ ${count} per-CO mark entries inserted for ${label}`);
+    return count;
   }
-  console.log(`  ✓ ${webMarkCount} integer marks inserted for ICE-3205`);
+
+  const sreMarkCount = await seedMarks(sreAssessments, 31, 0, 'ICE-3207');
+
+  // Web marks run slightly higher on average.
+  const webMarkCount = await seedMarks(webAssessments, 53, 0.03, 'ICE-3205');
 
   // ── Threshold policy ────────────────────────────────────────────
   // Must exist before anything is computed. createPolicyVersion refuses a

@@ -322,19 +322,28 @@ const FacultyView = {
           <th>Title</th><th>Type</th><th>Total Marks</th><th>Attainment Mark</th><th>Maps to COs</th><th class="td-r">Actions</th>
         </tr></thead>
         <tbody>${assessments.length ? assessments.map(a => {
-          const attMark = a.weight > 0 ? a.weight : Math.floor(a.totalMarks * 0.6);
+          // attainmentMark has its own column now. This used to read a.weight,
+          // which was the old hack of storing the pass mark in the weight field;
+          // weight is a real weight again, so reading it here showed nonsense.
+          const attMark = a.attainmentMark != null ? a.attainmentMark : Math.floor(a.totalMarks * 0.6);
+          const t = (a.title||'').replace(/'/g,'&#39;');
+          const coBadges = (a.assessmentCOs||[])
+            .map(ac => `<span class="badge bg-green" title="${ac.coMarks} of ${a.totalMarks} marks">${ac.courseOutcome?.code||''} <span style="opacity:.75">${ac.coMarks}</span></span>`)
+            .join(' ') || '<span class="text-muted">none</span>';
           return `<tr>
-            <td class="fw7">${a.title}</td>
+            <td class="fw7">${esc(a.title)}</td>
             <td><span class="badge bg-gray">${a.type.replace(/_/g,' ')}</span></td>
             <td>${a.totalMarks}</td>
             <td>
               <span id="am-${a.id}" style="font-weight:700;color:var(--green)">${attMark}</span>
               <button class="btn btn-ghost btn-xs" style="margin-left:4px" onclick="FacultyView._setAttainMark('${a.id}','${a.totalMarks}',${attMark})" title="Edit attainment mark">&#9998;</button>
             </td>
-            <td>${(a.assessmentCOs||[]).map(ac=>'<span class="badge bg-green">'+( ac.courseOutcome?.code||'')+'</span>').join(' ')||'-'}</td>
+            <td>${coBadges}</td>
             <td class="td-r" style="white-space:nowrap">
-              <button class="btn btn-secondary btn-xs" onclick="FacultyView._uploadMarks('${a.id}','${a.title.replace(/'/g,'&#39;')}','${a.totalMarks}')" title="Upload Excel/CSV">&#8679; Upload</button>
-              <button class="btn btn-primary btn-xs" onclick="FacultyView._openMarksSheet('${a.id}','${a.title.replace(/'/g,'&#39;')}','${a.totalMarks}')">${ico('edit',13)} Enter</button>
+              <button class="btn btn-secondary btn-xs" onclick="FacultyView._uploadMarks('${a.id}','${t}','${a.totalMarks}')" title="Upload Excel/CSV">&#8679; Upload</button>
+              <button class="btn btn-primary btn-xs" onclick="FacultyView._openMarksSheet('${a.id}','${t}')">${ico('edit',13)} Enter</button>
+              <button class="btn btn-secondary btn-xs" onclick="FacultyView._editAssess('${a.id}')" title="Edit assessment and CO allocation">${ico('edit',13)}</button>
+              <button class="btn btn-danger btn-xs" onclick="FacultyView._delAssess('${a.id}','${t}')" title="Delete assessment">${ico('trash',13)}</button>
             </td>
           </tr>`;
         }).join('') : tdEmpty('No assessments yet',6)}</tbody></table></div>`;
@@ -537,56 +546,179 @@ const FacultyView = {
     } catch(e) { document.getElementById('modal-body').innerHTML = '<div class="alert alert-error"><span class="alert-icon">!</span>' + e.message + '</div>'; }
   },
 
-  async _addAssess() {
-    const cos = await Api.getCourseOutcomes(this._cid);
-    const types = ['QUIZ','ASSIGNMENT','MID_TERM','FINAL','LAB','PROJECT','PRESENTATION','OTHER'];
-    showModal('Add Assessment', `
-      <div class="fg mb3"><label>Title</label><input id="ma-title" placeholder="e.g. Mid Term Examination"></div>
-      <div class="form-row fr2 mb3">
-        <div class="fg"><label>Type</label>
-          <select id="ma-type">${types.map(t=>`<option value="${t}">${t.replace(/_/g,' ')}</option>`).join('')}</select></div>
-        <div class="fg"><label>Total Marks</label><input id="ma-marks" type="number" value="100" min="1"></div>
-      </div>
-      <div class="fg"><label>Map to Course Outcomes</label>
-        <div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:6px">
-          ${cos.map(co=>`
-            <label style="display:flex;align-items:center;gap:6px;padding:6px 11px;border:1.5px solid var(--border);border-radius:7px;cursor:pointer;font-size:12.5px">
-              <input type="checkbox" class="co-chk" value="${co.id}" style="width:auto;accent-color:var(--green)">
-              <strong>${co.code}</strong> <span class="text-muted">${co.title}</span>
-            </label>`).join('')}
-        </div>
-      </div>`,
-      `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-       <button class="btn btn-primary" onclick="FacultyView._saveAssess()">${ico('save')} Add</button>`);
+  // ── Assessment create / edit ─────────────────────────────────
+  // Each CO gets its own mark allocation, and the allocations must add up to
+  // the paper total. 12 + 10 on a 30-mark paper would mean 8 marks are assessed
+  // against no outcome, which the server rejects, so the dialog shows the
+  // running sum and refuses to submit before it balances.
+  async _addAssess() { return this._assessDialog(null); },
+
+  async _editAssess(aid) {
+    const list = await Api.getAssessments(this._cid);
+    const a = (list || []).find(x => x.id === aid);
+    if (!a) return toast('Assessment not found', 'err');
+    return this._assessDialog(a);
   },
 
-  async _saveAssess() {
+  async _assessDialog(existing) {
+    const cos = await Api.getCourseOutcomes(this._cid);
+    const types = ['QUIZ','ASSIGNMENT','MID_TERM','FINAL','LAB','PROJECT','PRESENTATION','VIVA','DESIGN_PROJECT','OTHER'];
+    const isEdit = !!existing;
+    const picked = {};
+    (existing?.assessmentCOs || []).forEach(ac => { picked[ac.courseOutcomeId] = ac.coMarks; });
+
+    showModal(isEdit ? 'Edit Assessment' : 'Add Assessment', `
+      <div class="fg mb3"><label>Title</label>
+        <input id="ma-title" placeholder="e.g. Mid Term Examination" value="${esc(existing?.title || '')}"></div>
+      <div class="form-row fr2 mb3">
+        <div class="fg"><label>Type</label>
+          <select id="ma-type">${types.map(t=>`<option value="${t}"${existing?.type===t?' selected':''}>${t.replace(/_/g,' ')}</option>`).join('')}</select></div>
+        <div class="fg"><label>Total Marks</label>
+          <input id="ma-marks" type="number" value="${existing?.totalMarks ?? 100}" min="1" oninput="FacultyView._recalcAlloc()"></div>
+      </div>
+      <div class="fg"><label>Course Outcomes and mark allocation</label>
+        <p class="text-xs text-muted mb2">Tick each CO this paper assesses and enter how many of its marks test that outcome.</p>
+        <div style="display:flex;flex-direction:column;gap:7px;margin-top:6px">
+          ${cos.map(co => {
+            const on = picked[co.id] != null;
+            return `<label style="display:flex;align-items:center;gap:9px;padding:7px 11px;border:1.5px solid var(--border);border-radius:7px;font-size:12.5px">
+              <input type="checkbox" class="co-chk" value="${co.id}"${on?' checked':''} style="width:auto;accent-color:var(--green)"
+                onchange="FacultyView._toggleAlloc(this)">
+              <span style="flex:1"><strong>${co.code}</strong> <span class="text-muted">${esc(co.title)}</span></span>
+              <input type="number" class="co-marks" data-co="${co.id}" min="0" step="0.5" placeholder="marks"
+                value="${on ? picked[co.id] : ''}"${on?'':' disabled'}
+                style="width:90px;text-align:center" oninput="FacultyView._recalcAlloc()">
+            </label>`;
+          }).join('')}
+        </div>
+        <div id="alloc-sum" class="mt2 text-sm"></div>
+      </div>`,
+      `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+       <button class="btn btn-primary" id="ma-save" onclick="FacultyView._saveAssess(${isEdit?`'${existing.id}'`:'null'})">${ico('save')} ${isEdit?'Save changes':'Add'}</button>`);
+
+    this._recalcAlloc();
+  },
+
+  _toggleAlloc(chk) {
+    const inp = chk.closest('label').querySelector('.co-marks');
+    inp.disabled = !chk.checked;
+    if (!chk.checked) inp.value = '';
+    this._recalcAlloc();
+  },
+
+  _recalcAlloc() {
+    const total = parseFloat(document.getElementById('ma-marks')?.value) || 0;
+    let sum = 0, n = 0;
+    document.querySelectorAll('.co-chk:checked').forEach(c => {
+      const v = parseFloat(c.closest('label').querySelector('.co-marks').value);
+      if (!isNaN(v)) { sum += v; n++; }
+    });
+    const el = document.getElementById('alloc-sum');
+    const btn = document.getElementById('ma-save');
+    if (!el) return;
+
+    if (!n) {
+      el.innerHTML = `<span class="text-muted">No COs selected yet.</span>`;
+      if (btn) btn.disabled = true;
+      return;
+    }
+    const diff = Math.round((total - sum) * 100) / 100;
+    if (Math.abs(diff) < 0.001) {
+      el.innerHTML = `<span style="color:var(--l3);font-weight:600">Allocated ${sum} of ${total}. Balanced.</span>`;
+      if (btn) btn.disabled = false;
+    } else {
+      el.innerHTML = `<span style="color:var(--l0);font-weight:600">Allocated ${sum} of ${total}. ${diff > 0 ? diff + ' unallocated' : Math.abs(diff) + ' over'}.</span>`;
+      if (btn) btn.disabled = true;
+    }
+  },
+
+  async _saveAssess(assessmentId) {
+    const courseOutcomes = [];
+    document.querySelectorAll('.co-chk:checked').forEach(c => {
+      const v = parseFloat(c.closest('label').querySelector('.co-marks').value);
+      if (!isNaN(v) && v > 0) courseOutcomes.push({ courseOutcomeId: c.value, coMarks: v });
+    });
+
     const d = {
       title: document.getElementById('ma-title').value.trim(),
       type: document.getElementById('ma-type').value,
       totalMarks: parseFloat(document.getElementById('ma-marks').value),
-      courseOutcomeIds: [...document.querySelectorAll('.co-chk:checked')].map(c=>c.value),
+      courseOutcomes,
     };
     if (!d.title) return toast('Title required', 'err');
-    try { await Api.createAssessment(this._cid, d); toast('Assessment added'); closeModal(); this._loadAssess(); }
-    catch(e) { toast(e.message, 'err'); }
+    if (!courseOutcomes.length) return toast('Allocate marks to at least one CO', 'err');
+
+    try {
+      if (assessmentId) {
+        await Api.updateAssessment(this._cid, assessmentId, d);
+        toast('Assessment updated - attainment recomputed');
+      } else {
+        await Api.createAssessment(this._cid, d);
+        toast('Assessment added');
+      }
+      closeModal();
+      this._loadAssess();
+    } catch(e) {
+      // 409 with an impact block means the CO change would discard marks. The
+      // server refuses unless force is set, so surface the count and let the
+      // user decide rather than silently destroying entered marks.
+      const impact = e.body?.impact;
+      if (impact) {
+        const lost = (impact.marksOnRemovedCos || 0) + (impact.marksExceedingNewAllocation || 0);
+        if (!confirm(`This change will delete ${lost} existing mark entr${lost===1?'y':'ies'} that no longer fit the CO allocation.\n\nProceed?`)) return;
+        try {
+          await Api.updateAssessment(this._cid, assessmentId, { ...d, force: true });
+          toast(`Assessment updated - ${lost} mark(s) discarded, attainment recomputed`);
+          closeModal();
+          this._loadAssess();
+        } catch(e2) { toast(e2.message, 'err'); }
+        return;
+      }
+      toast(e.message, 'err');
+    }
   },
 
-  // ── Marks - Spreadsheet style ────────────────────────────────
-  async _openMarksSheet(aid, title, totalMarks) {
+  async _delAssess(aid, title) {
+    if (!confirm(`Delete "${title}"?\n\nRefused if marks have already been entered.`)) return;
+    try {
+      await Api.deleteAssessment(this._cid, aid);
+      toast('Assessment deleted');
+      this._loadAssess();
+    } catch(e) { toast(e.message, 'err'); }
+  },
+
+  // ── Marks - one row per student, one column per CO ───────────
+  // Marks are recorded per CO now. A 30-mark mid-term split 12/10/8 across
+  // three COs gets three inputs per student rather than one, because a single
+  // 24/30 divided by a share credited the same percentage on every section and
+  // that is a number no answer script supports.
+  async _openMarksSheet(aid, title) {
     document.getElementById('tc-ass').innerHTML = loading();
     try {
-      const marks = await Api.getMarks(aid);
-      const tm = parseFloat(totalMarks);
+      const res = await Api.getMarks(aid);
+      const cols = res.columns || [];
+      const rows = res.students || [];
+      const tm = res.totalMarks || cols.reduce((t, c) => t + c.coMarks, 0);
+      this._markCols = cols;
+
+      if (!cols.length) {
+        document.getElementById('tc-ass').innerHTML =
+          `<div class="alert alert-error"><span class="alert-icon">!</span>This assessment has no COs attached. Edit it and allocate marks to at least one CO.</div>`;
+        return;
+      }
+
+      const headCells = cols.map(c =>
+        `<th style="width:110px;text-align:center" title="${esc(c.title||'')}">${c.code}<div class="text-xs text-muted fw4">/ ${c.coMarks}</div></th>`
+      ).join('');
 
       document.getElementById('tc-ass').innerHTML = `
         <div class="flex-between mb3">
           <div>
             <button class="btn btn-ghost btn-sm mb2" onclick="FacultyView._loadAssess()">${ico('back',13)} Back to Assessments</button>
-            <div class="sec-title">Marks - ${title} <span class="badge bg-gray">/${tm}</span></div>
-            <p class="text-sm text-muted">Edit marks inline. Click Save when done.</p>
+            <div class="sec-title">Marks - ${esc(title)} <span class="badge bg-gray">/${tm}</span></div>
+            <p class="text-sm text-muted">One column per CO. Leave blank if not marked yet; type <b>a</b> for absent. Blank is not the same as zero.</p>
           </div>
-          <button class="btn btn-primary" onclick="FacultyView._saveAllMarks('${aid}','${tm}')">${ico('save')} Save All Marks</button>
+          <button class="btn btn-primary" onclick="FacultyView._saveAllMarks('${aid}')">${ico('save')} Save All Marks</button>
         </div>
         <div class="tbl-wrap">
           <table id="marks-sheet">
@@ -594,77 +726,102 @@ const FacultyView = {
               <th style="width:40px">#</th>
               <th>Roll No.</th>
               <th>Name</th>
-              <th style="width:120px;text-align:center">Marks / ${tm}</th>
-              <th style="width:80px;text-align:center">% Score</th>
-              <th style="width:100px;text-align:center">Status</th>
+              ${headCells}
+              <th style="width:90px;text-align:center">Total</th>
+              <th style="width:80px;text-align:center">%</th>
             </tr></thead>
             <tbody>
-              ${marks.map((m, i) => {
-                const hasMark = m.marksObtained != null;
-                const pct = hasMark ? (m.marksObtained / tm * 100).toFixed(1) : '';
-                const pass = hasMark && m.marksObtained / tm >= 0.6;
-                return `<tr id="mrow-${m.studentId}">
-                  <td style="color:var(--text3)">${i+1}</td>
-                  <td style="font-family:monospace;font-size:12px">${m.institutionalId}</td>
-                  <td class="fw6">${m.name}</td>
-                  <td style="text-align:center">
-                    <input type="number" class="mark-inp" data-sid="${m.studentId}" data-tm="${tm}"
-                      value="${hasMark ? m.marksObtained : ''}" min="0" max="${tm}" placeholder="-"
-                      style="width:90px;text-align:center;font-weight:700"
+              ${rows.map((r, i) => {
+                const cells = cols.map(c => {
+                  const m = (r.marks || []).find(x => x.courseOutcomeId === c.courseOutcomeId) || {};
+                  const val = m.isAbsent ? 'a' : (m.marksObtained != null ? m.marksObtained : '');
+                  return `<td style="text-align:center">
+                    <input type="text" class="mark-inp" data-sid="${r.studentId}" data-co="${c.courseOutcomeId}" data-max="${c.coMarks}"
+                      value="${val}" placeholder="-" style="width:80px;text-align:center;font-weight:700"
                       oninput="FacultyView._onMarkInput(this)">
-                  </td>
-                  <td class="pct-cell" style="text-align:center;font-weight:700;color:${hasMark?(pass?'var(--l3)':'var(--l0)'):'var(--text4)'}">
-                    ${pct ? pct+'%' : '-'}
-                  </td>
-                  <td class="status-cell" style="text-align:center">
-                    ${hasMark ? `<span class="badge ${pass?'bg-green':'bg-red'}">${pass?'Attained':'Not Attained'}</span>` : '-'}
-                  </td>
+                  </td>`;
+                }).join('');
+                const hasTotal = r.total != null;
+                const pct = hasTotal ? (r.total / tm * 100).toFixed(1) : '';
+                return `<tr id="mrow-${r.studentId}" data-tm="${tm}">
+                  <td style="color:var(--text3)">${i+1}</td>
+                  <td style="font-family:monospace;font-size:12px">${esc(r.institutionalId||'')}</td>
+                  <td class="fw6">${esc(r.name)}</td>
+                  ${cells}
+                  <td class="tot-cell" style="text-align:center;font-weight:700">${hasTotal ? r.total : '-'}</td>
+                  <td class="pct-cell" style="text-align:center;font-weight:700;color:var(--text4)">${pct ? pct+'%' : '-'}</td>
                 </tr>`;
               }).join('')}
             </tbody>
           </table>
         </div>
         <div class="mt3 flex-between">
-          <span class="text-sm text-muted">${marks.length} students</span>
-          <button class="btn btn-primary" onclick="FacultyView._saveAllMarks('${aid}','${tm}')">${ico('save')} Save All Marks</button>
+          <span class="text-sm text-muted">${rows.length} students &middot; ${cols.length} CO column(s)</span>
+          <button class="btn btn-primary" onclick="FacultyView._saveAllMarks('${aid}')">${ico('save')} Save All Marks</button>
         </div>`;
+
+      rows.forEach(r => this._recalcRow(document.getElementById('mrow-' + r.studentId)));
     } catch(e) {
-      document.getElementById('tc-ass').innerHTML = `<div class="alert alert-error"><span class="alert-icon">⚠</span>${e.message}</div>`;
+      document.getElementById('tc-ass').innerHTML = `<div class="alert alert-error"><span class="alert-icon">!</span>${esc(e.message)}</div>`;
     }
   },
 
   _onMarkInput(inp) {
-    const tm = parseFloat(inp.dataset.tm);
-    const v = parseFloat(inp.value);
-    const row = inp.closest('tr');
-    const pctCell = row.querySelector('.pct-cell');
-    const statusCell = row.querySelector('.status-cell');
-    if (!inp.value || isNaN(v)) {
-      pctCell.textContent = '-'; pctCell.style.color = 'var(--text4)';
-      statusCell.innerHTML = '-';
-      return;
-    }
-    const pct = (v / tm * 100).toFixed(1);
-    const pass = v / tm >= 0.6;
-    pctCell.textContent = pct + '%';
-    pctCell.style.color = pass ? 'var(--l3)' : 'var(--l0)';
-    statusCell.innerHTML = `<span class="badge ${pass?'bg-green':'bg-red'}">${pass?'Attained':'Not Attained'}</span>`;
+    const max = parseFloat(inp.dataset.max);
+    const raw = (inp.value || '').trim().toLowerCase();
+    const isAbsent = raw === 'a';
+    const v = parseFloat(raw);
+    const bad = raw !== '' && !isAbsent && (isNaN(v) || v < 0 || v > max);
+    inp.style.borderColor = bad ? 'var(--l0)' : '';
+    inp.title = bad ? `Must be between 0 and ${max}, or "a" for absent` : '';
+    this._recalcRow(inp.closest('tr'));
   },
 
-  async _saveAllMarks(aid, totalMarks) {
-    const tm = parseFloat(totalMarks);
+  // Row total sums only the cells that carry a real mark. An absent or blank
+  // section is missing evidence, so it drops out rather than counting as zero.
+  _recalcRow(row) {
+    if (!row) return;
+    const tm = parseFloat(row.dataset.tm);
+    let sum = 0, any = false;
+    row.querySelectorAll('.mark-inp').forEach(inp => {
+      const raw = (inp.value || '').trim().toLowerCase();
+      if (raw === '' || raw === 'a') return;
+      const v = parseFloat(raw);
+      if (!isNaN(v)) { sum += v; any = true; }
+    });
+    const totCell = row.querySelector('.tot-cell');
+    const pctCell = row.querySelector('.pct-cell');
+    if (!any) {
+      totCell.textContent = '-';
+      pctCell.textContent = '-';
+      pctCell.style.color = 'var(--text4)';
+      return;
+    }
+    const pct = sum / tm * 100;
+    totCell.textContent = Math.round(sum * 100) / 100;
+    pctCell.textContent = pct.toFixed(1) + '%';
+    pctCell.style.color = pct >= 60 ? 'var(--l3)' : 'var(--l0)';
+  },
+
+  async _saveAllMarks(aid) {
     const marks = [], invalid = [];
     document.querySelectorAll('.mark-inp').forEach(inp => {
-      if (!inp.value) return;
-      const v = parseFloat(inp.value);
-      if (isNaN(v) || v < 0 || v > tm) { invalid.push(inp.dataset.sid); return; }
-      marks.push({ studentId: inp.dataset.sid, marksObtained: v });
+      const raw = (inp.value || '').trim().toLowerCase();
+      if (raw === '') return; // not marked yet, leave it alone
+      const base = { studentId: inp.dataset.sid, courseOutcomeId: inp.dataset.co };
+      if (raw === 'a') { marks.push({ ...base, marksObtained: 0, isAbsent: true }); return; }
+      const v = parseFloat(raw);
+      const max = parseFloat(inp.dataset.max);
+      if (isNaN(v) || v < 0 || v > max) { invalid.push(inp); return; }
+      marks.push({ ...base, marksObtained: v, isAbsent: false });
     });
-    if (invalid.length) return toast(`Invalid marks for ${invalid.length} student(s)`, 'err');
+
+    if (invalid.length) return toast(`${invalid.length} mark(s) out of range for their CO`, 'err');
     if (!marks.length) return toast('No marks entered', 'err');
+
     try {
       await Api.saveMarks(aid, marks);
-      toast(`${marks.length} marks saved - attainment recomputed`);
+      toast(`${marks.length} mark entries saved - attainment recomputed`);
     } catch(e) { toast(e.message, 'err'); }
   },
 

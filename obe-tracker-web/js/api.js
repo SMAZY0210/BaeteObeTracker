@@ -1,7 +1,8 @@
-// Use Vercel backend in production, localhost for local dev
-const API_BASE = (window.location.hostname === 'localhost' || window.location.protocol === 'file:')
-  ? 'http://localhost:3000/api/v1'
-  : 'https://obe-tracker.vercel.app/api/v1';
+// Same origin. nginx serves this frontend and proxies /api/ to the Node process
+// on 127.0.0.1:3000, so a relative path is correct everywhere and there is no
+// cross-origin request to configure. Hardcoding a deployment URL here meant the
+// fix had to be re-applied by hand after every git pull on the server.
+const API_BASE = '/api/v1';
 
 const Api = {
   _token: null,
@@ -18,7 +19,16 @@ const Api = {
     try {
       const res = await fetch(API_BASE + path, opts);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`);
+      if (!res.ok) {
+        // Keep the whole payload on the error. Several endpoints return
+        // structured detail alongside the message (which marks a CO change
+        // would discard, which departments block a delete), and throwing only
+        // the string meant callers could never act on it.
+        const err = new Error(data.error || data.message || `HTTP ${res.status}`);
+        err.status = res.status;
+        err.body = data;
+        throw err;
+      }
       return data.data;
     } catch (e) {
       if (e.message === 'Failed to fetch') throw new Error('Cannot reach server. Is the backend running?');
@@ -47,6 +57,12 @@ const Api = {
   createDepartment(d)                 { return this.post('/admin/departments', d); },
   updateDepartment(id, d)             { return this.put('/admin/departments/' + id, d); },
   deleteDepartment(id)                { return this.delete('/admin/departments/' + id); },
+
+  // Curriculum versions
+  getCurriculumVersions(programId)    { return this.get(`/admin/programs/${programId}/curriculum-versions`); },
+  createCurriculumVersion(programId, d) { return this.post(`/admin/programs/${programId}/curriculum-versions`, d); },
+  updateCurriculumVersion(id, d)      { return this.put('/admin/curriculum-versions/' + id, d); },
+  deleteCurriculumVersion(id)         { return this.delete('/admin/curriculum-versions/' + id); },
   getPrograms()                       { return this.get('/admin/programs'); },
   createProgram(d)                    { return this.post('/admin/programs', d); },
   getSessions()                       { return this.get('/admin/sessions'); },
@@ -83,6 +99,8 @@ const Api = {
   saveMapping(courseId, mappings)     { return this.post('/faculty/courses/' + courseId + '/mapping', { mappings }); },
   getAssessments(courseId)            { return this.get('/faculty/courses/' + courseId + '/assessments'); },
   createAssessment(courseId, d)       { return this.post('/faculty/courses/' + courseId + '/assessments', d); },
+  updateAssessment(courseId, id, d)   { return this.put('/faculty/courses/' + courseId + '/assessments/' + id, d); },
+  deleteAssessment(courseId, id)      { return this.delete('/faculty/courses/' + courseId + '/assessments/' + id); },
   getMarks(assessmentId)              { return this.get('/faculty/assessments/' + assessmentId + '/marks'); },
   saveMarks(assessmentId, marks)      { return this.post('/faculty/assessments/' + assessmentId + '/marks', { marks }); },
   getCourseStudents(courseId)          { return this.get('/faculty/courses/' + courseId + '/students'); },

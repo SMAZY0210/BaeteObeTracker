@@ -16,6 +16,7 @@ router.post('/courses/:courseId/mapping', c.saveMapping);
 
 router.get('/courses/:courseId/assessments', c.getAssessments);
 router.post('/courses/:courseId/assessments', c.createAssessment);
+router.put('/courses/:courseId/assessments/:id', c.updateAssessment);
 router.delete('/courses/:courseId/assessments/:id', c.deleteAssessment);
 
 router.get('/assessments/:assessmentId/marks', c.getMarks);

@@ -420,13 +420,33 @@ const assignFaculty = async (req, res, next) => {
 // ── User Management ──────────────────────────────────────────
 const getUsers = async (req, res, next) => {
   try {
-    const { role, isActive, search, sessionId, batchYear, section } = req.query;
+    const { role, isActive, search, sessionId, batchYear, section, departmentId } = req.query;
+
+    // Student lookup needs two filters, not one.
+    //
+    // A department alone spans every batch, so "ICT" returns five years of
+    // students and the roll numbers overlap enough that picking the wrong
+    // person is easy. Requiring department AND batch (or a direct search on a
+    // roll number or email) narrows it to a group the admin can actually scan.
+    if (role === 'STUDENT' && !search) {
+      const filters = [departmentId, sessionId, batchYear, section].filter(Boolean).length;
+      if (filters < 2) {
+        return res.status(400).json({
+          status: 'error',
+          error: 'Narrow the search first. Pick a department and a batch, or search by roll number or email.',
+          need: { given: filters, required: 2 },
+          accepts: ['departmentId', 'sessionId', 'batchYear', 'section', 'search'],
+        });
+      }
+    }
 
     const users = await prisma.user.findMany({
       where: {
         institutionId: req.user.institutionId,
         deletedAt: null,
         ...(role && { role }),
+        // Department reaches students through their batch.
+        ...(departmentId && { session: { departmentId } }),
         ...(isActive !== undefined && { isActive: isActive === 'true' }),
         // Filter students by their batch (session). sessionId is the new,
         // department-safe key. batchYear is kept only as a legacy fallback.
@@ -516,12 +536,220 @@ const updateUser = async (req, res, next) => {
 // success and changed nothing. Both are replaced by policy.controller.js, where
 // thresholds are versioned per program and require a written rationale.
 
+// ── Curriculum Versions ──────────────────────────────────────
+// A version is a frozen outcome set. Batches point at one and keep it, so a
+// 2027 curriculum revision does not silently rewrite what the 2023 cohort was
+// assessed against. That link is what makes historical attainment defensible.
+
+const getCurriculumVersions = async (req, res, next) => {
+  try {
+    const { programId } = req.params;
+    const versions = await prisma.curriculumVersion.findMany({
+      where: { programId },
+      include: {
+        _count: { select: { programOutcomes: { where: { deletedAt: null } }, sessions: true } },
+      },
+      orderBy: { version: 'desc' },
+    });
+
+    // A version is locked once a CLOSED or ARCHIVED batch has attainment against
+    // it. Active and draft batches are still in flux, so their outcomes stay
+    // editable and edits just trigger a recompute.
+    const withLock = await Promise.all(
+      versions.map(async (v) => {
+        const locked = await prisma.cohortPoAttainment.findFirst({
+          where: {
+            session: { curriculumVersionId: v.id, status: { in: ['CLOSED', 'ARCHIVED'] } },
+          },
+          select: { id: true },
+        });
+        return { ...v, locked: !!locked };
+      })
+    );
+
+    res.json({ status: 'success', data: withLock });
+  } catch (err) { next(err); }
+};
+
+/**
+ * Create a version. With copyFromVersionId, the source version's outcomes are
+ * duplicated as a starting point, which is what "revise" means in practice:
+ * you rarely rewrite all twelve, you change two and keep the rest.
+ */
+const createCurriculumVersion = async (req, res, next) => {
+  try {
+    const { programId } = req.params;
+    const { label, description, effectiveFrom, copyFromVersionId, makeCurrent } = req.body;
+
+    if (!label) return res.status(400).json({ status: 'error', error: 'label is required' });
+
+    const program = await prisma.program.findFirst({
+      where: { id: programId, deletedAt: null },
+      include: { department: { select: { institutionId: true } } },
+    });
+    if (!program || program.department.institutionId !== req.user.institutionId) {
+      return res.status(404).json({ status: 'error', error: 'Program not found' });
+    }
+
+    const latest = await prisma.curriculumVersion.findFirst({
+      where: { programId },
+      orderBy: { version: 'desc' },
+    });
+    const version = (latest?.version ?? 0) + 1;
+    const from = effectiveFrom ? new Date(effectiveFrom) : new Date();
+
+    let sourceOutcomes = [];
+    if (copyFromVersionId) {
+      sourceOutcomes = await prisma.programOutcome.findMany({
+        where: { curriculumVersionId: copyFromVersionId, deletedAt: null },
+        orderBy: { code: 'asc' },
+      });
+      if (!sourceOutcomes.length) {
+        return res.status(400).json({ status: 'error', error: 'The version being copied has no outcomes' });
+      }
+    }
+
+    const created = await prisma.$transaction(async (tx) => {
+      if (latest && !latest.effectiveTill) {
+        await tx.curriculumVersion.update({ where: { id: latest.id }, data: { effectiveTill: from } });
+      }
+      if (makeCurrent !== false) {
+        await tx.curriculumVersion.updateMany({ where: { programId }, data: { isCurrent: false } });
+      }
+
+      const cv = await tx.curriculumVersion.create({
+        data: {
+          programId,
+          version,
+          label,
+          description: description ?? null,
+          effectiveFrom: from,
+          isCurrent: makeCurrent !== false,
+        },
+      });
+
+      if (sourceOutcomes.length) {
+        await tx.programOutcome.createMany({
+          data: sourceOutcomes.map((o) => ({
+            programId,
+            curriculumVersionId: cv.id,
+            frameworkOutcomeId: o.frameworkOutcomeId,
+            code: o.code,
+            title: o.title,
+            description: o.description,
+          })),
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          userId: req.user.userId,
+          action: 'CURRICULUM_VERSION_CREATE',
+          entity: 'CurriculumVersion',
+          entityId: cv.id,
+          meta: { programId, version, label, copiedFrom: copyFromVersionId ?? null },
+        },
+      });
+
+      return cv;
+    });
+
+    res.status(201).json({
+      status: 'success',
+      data: created,
+      note: sourceOutcomes.length
+        ? `${sourceOutcomes.length} outcome(s) copied. Existing batches keep their old version; assign new batches to this one.`
+        : 'Empty version created. Add outcomes before assigning a batch to it.',
+    });
+  } catch (err) { next(err); }
+};
+
+const updateCurriculumVersion = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { label, description, isCurrent } = req.body;
+
+    const cv = await prisma.curriculumVersion.findUnique({ where: { id } });
+    if (!cv) return res.status(404).json({ status: 'error', error: 'Version not found' });
+
+    if (isCurrent === true) {
+      await prisma.curriculumVersion.updateMany({
+        where: { programId: cv.programId },
+        data: { isCurrent: false },
+      });
+    }
+
+    const updated = await prisma.curriculumVersion.update({
+      where: { id },
+      data: {
+        ...(label != null ? { label } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(isCurrent != null ? { isCurrent } : {}),
+      },
+    });
+
+    res.json({ status: 'success', data: updated });
+  } catch (err) { next(err); }
+};
+
+const deleteCurriculumVersion = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const sessions = await prisma.session.findMany({
+      where: { curriculumVersionId: id },
+      select: { id: true, name: true },
+    });
+    if (sessions.length) {
+      return res.status(409).json({
+        status: 'error',
+        error: `Cannot delete: ${sessions.length} batch(es) are assessed against this version.`,
+        blockers: { sessions },
+      });
+    }
+    // Hard delete, unlike departments. A version with no batch attached has no
+    // attainment history worth preserving, and its outcomes cascade away.
+    await prisma.curriculumVersion.delete({ where: { id } });
+    res.json({ status: 'success', data: { message: 'Version deleted' } });
+  } catch (err) { next(err); }
+};
+
+/** Is this version's outcome set locked against edits? */
+async function assertVersionEditable(curriculumVersionId) {
+  const locked = await prisma.cohortPoAttainment.findFirst({
+    where: { session: { curriculumVersionId, status: { in: ['CLOSED', 'ARCHIVED'] } } },
+    select: { id: true, session: { select: { name: true } } },
+  });
+  if (locked) {
+    return `This curriculum version has been used to assess a closed batch (${locked.session?.name ?? 'unknown'}). Editing its outcomes now would change what that cohort was measured against. Create a new version instead.`;
+  }
+  return null;
+}
+
 // ── Program Outcomes (Admin defines POs) ─────────────────────
 const getProgramOutcomes = async (req, res, next) => {
   try {
     const { programId } = req.params;
+    // ?curriculumVersionId=... to read a specific version; defaults to current.
+    let { curriculumVersionId } = req.query;
+
+    if (!curriculumVersionId) {
+      const current = await prisma.curriculumVersion.findFirst({
+        where: { programId, isCurrent: true },
+        select: { id: true },
+      });
+      curriculumVersionId = current?.id;
+    }
+
+    if (!curriculumVersionId) {
+      return res.json({
+        status: 'success',
+        data: [],
+        warning: 'This program has no curriculum version. Create one before defining outcomes.',
+      });
+    }
+
     const items = await prisma.programOutcome.findMany({
-      where: { programId, deletedAt: null },
+      where: { curriculumVersionId, deletedAt: null },
     });
     // Sort numerically: PO1, PO2, ..., PO10, PO11, PO12
     items.sort((a, b) => {
@@ -530,25 +758,93 @@ const getProgramOutcomes = async (req, res, next) => {
       if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
       return a.code.localeCompare(b.code);
     });
-    res.json({ status: 'success', data: items });
+
+    const lockReason = await assertVersionEditable(curriculumVersionId);
+    res.json({
+      status: 'success',
+      data: items,
+      curriculumVersionId,
+      editable: !lockReason,
+      lockReason,
+    });
   } catch (err) { next(err); }
 };
 
 const createProgramOutcome = async (req, res, next) => {
   try {
     const { programId } = req.params;
-    const { code, title, description } = req.body;
-    const item = await prisma.programOutcome.create({ data: { programId, code, title, description } });
+    const { code, title, description, frameworkOutcomeId } = req.body;
+    let { curriculumVersionId } = req.body;
+
+    if (!curriculumVersionId) {
+      const current = await prisma.curriculumVersion.findFirst({
+        where: { programId, isCurrent: true },
+        select: { id: true },
+      });
+      curriculumVersionId = current?.id;
+    }
+    if (!curriculumVersionId) {
+      return res.status(400).json({
+        status: 'error',
+        error: 'No curriculum version. Create one before adding outcomes.',
+      });
+    }
+
+    const lockReason = await assertVersionEditable(curriculumVersionId);
+    if (lockReason) return res.status(409).json({ status: 'error', error: lockReason });
+
+    const item = await prisma.programOutcome.create({
+      data: { programId, curriculumVersionId, code, title, description, frameworkOutcomeId: frameworkOutcomeId ?? null },
+    });
     res.status(201).json({ status: 'success', data: item });
   } catch (err) { next(err); }
 };
 
+/**
+ * Edit an outcome.
+ *
+ * Allowed while the version has not been used to assess a closed batch, because
+ * a typo caught before anyone graduates is just a fix. Refused afterwards: the
+ * same edit once a cohort has been assessed rewrites what they were measured
+ * against, and the answer then is a new version, not an edit.
+ */
 const updateProgramOutcome = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { code, title, description } = req.body;
+
+    const existing = await prisma.programOutcome.findUnique({
+      where: { id },
+      select: { curriculumVersionId: true, code: true },
+    });
+    if (!existing) return res.status(404).json({ status: 'error', error: 'Outcome not found' });
+
+    const lockReason = await assertVersionEditable(existing.curriculumVersionId);
+    if (lockReason) {
+      return res.status(409).json({
+        status: 'error',
+        error: lockReason,
+        hint: 'POST /admin/programs/:programId/curriculum-versions with copyFromVersionId to branch from this one.',
+      });
+    }
+
     const item = await prisma.programOutcome.update({ where: { id }, data: { code, title, description } });
-    res.json({ status: 'success', data: item });
+
+    await prisma.auditLog.create({
+      data: {
+        userId: req.user.userId,
+        action: 'PO_UPDATE',
+        entity: 'ProgramOutcome',
+        entityId: id,
+        meta: { from: existing.code, to: code },
+      },
+    });
+
+    res.json({
+      status: 'success',
+      data: item,
+      note: 'Attainment already computed against this outcome is not recalculated. Re-run the course recompute if the change affects how it is assessed.',
+    });
   } catch (err) { next(err); }
 };
 
@@ -744,6 +1040,72 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
     const coWhere = { studentId, ...(courseId && { courseId }) };
     const poWhere = { studentId, ...(courseId && { courseId }) };
 
+    // Which COs produced each PO figure.
+    //
+    // computeStudentPoAttainment already builds this breakdown and throws it
+    // away on the way to storing a single percentage. Rebuilding it here from
+    // the stored CO rows and the mapping matrix gives the same numbers without
+    // a schema change: each contributing CO, its percentage, the correlation
+    // strength, and the weight that strength carries (WEAK 1, MODERATE 2,
+    // STRONG 3). A student asking "why is my PO2 at 58%" gets an answer.
+    const buildPoBreakdown = async (poRows, coRows) => {
+      if (!poRows.length) return {};
+
+      const mappings = await prisma.coPoMapping.findMany({
+        where: {
+          programOutcomeId: { in: [...new Set(poRows.map((r) => r.programOutcomeId))] },
+          ...(courseId && { courseId }),
+        },
+        include: {
+          courseOutcome: { select: { id: true, code: true, title: true } },
+          course: { select: { id: true, code: true, name: true } },
+        },
+      });
+
+      const CORR_WEIGHT = { WEAK: 1, MODERATE: 2, STRONG: 3 };
+      const coById = Object.fromEntries(coRows.map((c) => [c.courseOutcomeId, c]));
+      const out = {};
+
+      for (const po of poRows) {
+        const rows = mappings
+          .filter((m) => m.programOutcomeId === po.programOutcomeId)
+          .map((m) => {
+            const co = coById[m.courseOutcomeId];
+            const weight = CORR_WEIGHT[m.correlation] ?? 1;
+            return {
+              courseOutcomeId: m.courseOutcomeId,
+              code: m.courseOutcome.code,
+              title: m.courseOutcome.title,
+              courseCode: m.course?.code ?? null,
+              correlation: m.correlation,
+              weight,
+              percentage: co ? co.percentage : null,
+              attained: co ? co.attained : null,
+              // How much of the PO figure this CO actually accounts for. Null
+              // percentage means the student has no marks for it, so it
+              // contributed nothing rather than contributing a zero.
+              contribution: co ? co.percentage * weight : null,
+            };
+          })
+          .sort((a, b) => (b.weight - a.weight) || a.code.localeCompare(b.code));
+
+        const counted = rows.filter((r) => r.percentage != null);
+        const weightTotal = counted.reduce((t, r) => t + r.weight, 0);
+
+        out[po.programOutcomeId] = {
+          contributors: rows.map((r) => ({
+            ...r,
+            sharePct: weightTotal && r.percentage != null
+              ? Math.round((r.weight / weightTotal) * 1000) / 10
+              : null,
+          })),
+          countedCos: counted.length,
+          unassessedCos: rows.length - counted.length,
+        };
+      }
+      return out;
+    };
+
     const [coAttainments, poAttainments, enrolments] = await Promise.all([
       prisma.coAttainment.findMany({
         where: coWhere,
@@ -767,7 +1129,22 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
       courseMap[e.course.id] = e.course;
     }
 
-    res.json({ status: 'success', data: { student, coAttainments, poAttainments, courses: Object.values(courseMap) } });
+    const poBreakdown = await buildPoBreakdown(poAttainments, coAttainments);
+
+    res.json({
+      status: 'success',
+      data: {
+        student,
+        coAttainments,
+        // Each PO carries the COs that produced its figure, so the UI can hang a
+        // dropdown off the row without another round trip.
+        poAttainments: poAttainments.map((po) => ({
+          ...po,
+          breakdown: poBreakdown[po.programOutcomeId] ?? { contributors: [], countedCos: 0, unassessedCos: 0 },
+        })),
+        courses: Object.values(courseMap),
+      },
+    });
   } catch (err) { next(err); }
 };
 
@@ -855,6 +1232,10 @@ module.exports = {
   getEnrolments, enrolStudents, removeEnrolment,
   getAttainmentReport,
   getStudentAttainmentAdmin,
+  getCurriculumVersions,
+  createCurriculumVersion,
+  updateCurriculumVersion,
+  deleteCurriculumVersion,
   getProgramOutcomes, createProgramOutcome, updateProgramOutcome, deleteProgramOutcome,
   getDashboard,
 };

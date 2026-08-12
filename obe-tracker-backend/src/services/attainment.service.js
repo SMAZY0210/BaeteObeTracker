@@ -59,6 +59,7 @@ async function recomputeAttainmentForCourse(courseId, matrixVersion, _institutio
     prisma.courseOutcome.findMany({ where: { courseId, deletedAt: null } }),
     prisma.assessment.findMany({
       where: { courseId, deletedAt: null, method: 'DIRECT' }, // s.5.2.5: direct only
+      // marks now carry courseOutcomeId; the engine matches on it
       include: { assessmentCOs: true, marks: true },
     }),
     prisma.coPoMapping.findMany({ where: { courseId } }),

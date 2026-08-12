@@ -59,6 +59,11 @@ function initTabs(id){
 }
 
 // ── Render helpers ─────────────────────────────────────────────
+// Escape text before interpolating it into a template string. Names and titles
+// come from the database, so this is defence in depth rather than a live hole,
+// but a student called O'Brien or a course title with an ampersand should not
+// be able to break the markup.
+const esc=(v)=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const loading=()=>`<div class="loading-box"><div class="spin"></div> Loading…</div>`;
 const tdLoad=(n=6)=>`<tr><td colspan="${n}" class="td-load"><div class="spin" style="display:inline-block"></div></td></tr>`;
 const tdEmpty=(m,n=6)=>`<tr><td colspan="${n}" class="td-load text-muted">${m}</td></tr>`;

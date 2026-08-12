@@ -227,7 +227,27 @@ const AdminView={
             </select>
           </div>
         </div>
-        <button class="btn btn-primary" style="width:100%" onclick="AdminView._enrolBatchModal('${courseId}')">Enrol Batch</button>
+        <button class="btn btn-secondary" style="width:100%" onclick="AdminView._loadBatchRoster()">Show students in this batch</button>
+
+        <!-- Roster. Enrolling a whole batch blind is fine until someone has
+             deferred, transferred, or is repeating the course, at which point
+             the admin needs to see who they are actually adding. -->
+        <div id="en-roster-wrap" style="display:none;margin-top:14px">
+          <div class="flex-between mb2">
+            <span class="sec-title" style="font-size:13px">Batch roster</span>
+            <span>
+              <button class="btn btn-ghost btn-xs" onclick="AdminView._rosterAll(true)">Select all</button>
+              <button class="btn btn-ghost btn-xs" onclick="AdminView._rosterAll(false)">Clear</button>
+            </span>
+          </div>
+          <div id="en-roster" style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r)">
+            <div class="text-muted text-sm" style="padding:12px">Pick a batch, then press the button above.</div>
+          </div>
+          <div class="flex-between mt2">
+            <span id="en-roster-count" class="text-sm text-muted"></span>
+            <button class="btn btn-primary btn-sm" onclick="AdminView._enrolRosterSelected('${courseId}')">Enrol selected</button>
+          </div>
+        </div>
       </div>
 
       <!-- Individual pane -->
@@ -268,13 +288,101 @@ const AdminView={
 
     // Load sessions for batch dropdown
     try {
+      // Value is the sessionId. It used to strip digits out of the batch name,
+      // which broke as soon as two departments both had a "Batch 2023" and
+      // meant the query could not be scoped to a department at all.
       const sessions = await Api.getSessions();
       const sel = document.getElementById('en-batch');
       if(sel) sel.innerHTML = '<option value="">Select Batch</option>' +
-        sessions.map(s=>`<option value="${s.name.replace(/\D+/,'')}">${s.name}</option>`).join('');
+        sessions.map(s=>`<option value="${s.id}" data-dept="${s.departmentId||''}">${esc(s.name)}</option>`).join('');
     } catch(_) {}
 
     await AdminView._enrolRefreshModal();
+  },
+
+  // ── Batch roster ─────────────────────────────────────────────
+  async _loadBatchRoster() {
+    const sessionId = document.getElementById('en-batch')?.value;
+    const section = document.getElementById('en-section')?.value || '';
+    const wrap = document.getElementById('en-roster-wrap');
+    const box = document.getElementById('en-roster');
+    if (!sessionId) return toast('Pick a batch first', 'err');
+
+    wrap.style.display = '';
+    box.innerHTML = '<div class="text-muted text-sm" style="padding:12px">Loading…</div>';
+
+    try {
+      const opt = document.querySelector(`#en-batch option[value="${sessionId}"]`);
+      const departmentId = opt?.dataset.dept || '';
+
+      // Student lookup needs two filters. sessionId plus department satisfies
+      // it; sessionId plus section does too when the batch spans departments.
+      const params = { role: 'STUDENT', sessionId };
+      if (departmentId) params.departmentId = departmentId;
+      if (section) params.section = section;
+
+      const [students, enrolled] = await Promise.all([
+        Api.getUsers(params),
+        Api.getEnrolments(AdminView._enrolCourseId),
+      ]);
+      const already = new Set((enrolled || []).map(e => e.studentId || e.student?.id));
+
+      if (!students.length) {
+        box.innerHTML = '<div class="text-muted text-sm" style="padding:12px">No students in this batch' + (section ? ' and section' : '') + '.</div>';
+        document.getElementById('en-roster-count').textContent = '';
+        return;
+      }
+
+      AdminView._rosterIds = students.filter(s => !already.has(s.id)).map(s => s.id);
+
+      box.innerHTML = `<table style="width:100%;font-size:13px;border-collapse:collapse">
+        <tbody>${students.map(st => {
+          const on = already.has(st.id);
+          return `<tr style="border-bottom:1px solid var(--border)${on?';opacity:.55':''}">
+            <td style="padding:6px 8px;width:34px">
+              <input type="checkbox" class="roster-chk" value="${st.id}"${on?' disabled':''}
+                style="width:auto;accent-color:var(--green)" onchange="AdminView._rosterCount()">
+            </td>
+            <td style="padding:6px 8px">${esc(st.firstName)} ${esc(st.lastName)}</td>
+            <td style="padding:6px 8px;font-family:monospace;font-size:12px">${esc(st.institutionalId||'--')}</td>
+            <td style="padding:6px 8px">${st.section ? 'Sec ' + esc(st.section) : '--'}</td>
+            <td style="padding:6px 8px;text-align:right">${on ? '<span class="badge bg-gray">enrolled</span>' : ''}</td>
+          </tr>`;
+        }).join('')}</tbody></table>`;
+
+      document.getElementById('en-roster-count').textContent =
+        `${students.length} in batch, ${already.size ? students.length - AdminView._rosterIds.length : 0} already enrolled`;
+      AdminView._rosterCount();
+    } catch(e) {
+      box.innerHTML = `<div class="alert alert-error" style="margin:8px"><span class="alert-icon">!</span>${esc(e.message)}</div>`;
+    }
+  },
+
+  _rosterAll(on) {
+    document.querySelectorAll('.roster-chk:not(:disabled)').forEach(c => { c.checked = on; });
+    AdminView._rosterCount();
+  },
+
+  _rosterCount() {
+    const n = document.querySelectorAll('.roster-chk:checked').length;
+    const el = document.getElementById('en-roster-count');
+    if (el) el.textContent = n ? `${n} selected` : el.textContent.replace(/^\d+ selected$/, '') || '';
+  },
+
+  async _enrolRosterSelected(courseId) {
+    const ids = [...document.querySelectorAll('.roster-chk:checked')].map(c => c.value);
+    if (!ids.length) return toast('Select at least one student', 'err');
+    try {
+      await Api.enrolStudents({ courseId, studentIds: ids });
+      toast(`${ids.length} student(s) enrolled`);
+      await AdminView._enrolRefreshModal();
+      await AdminView._loadBatchRoster();
+    } catch(e) { toast(e.message, 'err'); }
+  },
+
+  _toggleRow(id) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
   },
 
   _enrolTab(tab) {
@@ -1164,18 +1272,58 @@ const AdminView={
         });
       }
 
+      // Each PO row gets an expandable breakdown of the COs that produced its
+      // figure. The server returns it on the row, so this is just markup: a PO
+      // is a correlation-weighted average of its mapped COs, and "why is my PO2
+      // at 58%" has no answer without seeing which CO dragged it there.
       let poHtml = '';
       if((d.poAttainments||[]).length === 0){
-        poHtml = '<tr><td colspan="4" class="td-load text-muted">No PO attainment data yet</td></tr>';
+        poHtml = '<tr><td colspan="5" class="td-load text-muted">No PO attainment data yet</td></tr>';
       } else {
         (d.poAttainments||[]).forEach(r => {
-          const att = r.level==='L3';
+          const att = r.attained != null ? r.attained : r.level==='L3';
+          const bd = r.breakdown || { contributors: [], countedCos: 0, unassessedCos: 0 };
+          const rowId = 'stupo-' + r.programOutcomeId;
+
           poHtml += '<tr>' +
             '<td><span class="badge bg-blue">'+r.programOutcome.code+'</span></td>' +
-            '<td>'+r.programOutcome.title+'</td>' +
+            '<td>'+esc(r.programOutcome.title)+'</td>' +
             '<td style="text-align:center"><span class="badge '+(att?'bg-green':'bg-red')+'">'+(att?'Attained':'Not Attained')+'</span></td>' +
             '<td style="text-align:right;font-weight:700;color:'+(att?'var(--l3)':'var(--l0)')+'">'+r.percentage.toFixed(1)+'%</td>' +
-            '</tr>';
+            '<td style="text-align:center">' +
+              (bd.contributors.length
+                ? '<button class="btn btn-ghost btn-xs" onclick="AdminView._toggleRow(\''+rowId+'\')">'+ico('expand',12)+' '+bd.contributors.length+' CO'+(bd.contributors.length===1?'':'s')+'</button>'
+                : '<span class="text-muted text-sm">--</span>') +
+            '</td></tr>';
+
+          if (bd.contributors.length) {
+            const rows = bd.contributors.map(c => {
+              const has = c.percentage != null;
+              const corrBadge = { STRONG:'bg-green', MODERATE:'bg-blue', WEAK:'bg-gray' }[c.correlation] || 'bg-gray';
+              return '<tr style="border-bottom:1px solid var(--border)'+(has?'':';opacity:.55')+'">' +
+                '<td style="padding:5px 8px"><b>'+c.code+'</b>'+(c.courseCode?' <span class="text-muted text-xs">'+esc(c.courseCode)+'</span>':'')+'</td>' +
+                '<td style="padding:5px 8px">'+esc(c.title)+'</td>' +
+                '<td style="padding:5px 8px;text-align:center"><span class="badge '+corrBadge+'">'+c.correlation.toLowerCase()+' &times;'+c.weight+'</span></td>' +
+                '<td style="padding:5px 8px;text-align:right;font-weight:700;color:'+(has?(c.attained?'var(--l3)':'var(--l0)'):'var(--text4)')+'">' +
+                  (has ? c.percentage.toFixed(1)+'%' : 'not assessed') + '</td>' +
+                '<td style="padding:5px 8px;text-align:right;color:var(--text3)">'+(c.sharePct!=null ? c.sharePct+'% of PO' : '--')+'</td>' +
+                '</tr>';
+            }).join('');
+
+            const note = bd.unassessedCos
+              ? '<p class="text-xs text-muted mt2">'+bd.unassessedCos+' mapped CO'+(bd.unassessedCos===1?'':'s')+' had no marks for this student, so '+(bd.unassessedCos===1?'it':'they')+' contributed nothing rather than counting as zero.</p>'
+              : '';
+
+            poHtml += '<tr id="'+rowId+'" style="display:none"><td colspan="5" style="padding:0;background:var(--surface2)">' +
+              '<div style="padding:12px 20px">' +
+                '<div class="text-sm fw7 mb2" style="color:var(--text3)">How '+r.programOutcome.code+' was calculated</div>' +
+                '<table style="width:100%;font-size:12.5px;border-collapse:collapse"><thead><tr style="border-bottom:1px solid var(--border)">' +
+                  '<th style="padding:5px 8px;text-align:left">CO</th><th style="padding:5px 8px;text-align:left">Title</th>' +
+                  '<th style="padding:5px 8px;text-align:center">Correlation</th><th style="padding:5px 8px;text-align:right">Score</th>' +
+                  '<th style="padding:5px 8px;text-align:right">Share</th></tr></thead><tbody>'+rows+'</tbody></table>' +
+                note +
+              '</div></td></tr>';
+          }
         });
       }
 
@@ -1187,7 +1335,7 @@ const AdminView={
           '<div><span class="text-muted text-sm">Section</span><div class="fw7">'+sec+'</div></div>' +
         '</div>' +
         '<div class="sec-title mb2">Program Outcome Attainment</div>' +
-        '<div class="tbl-wrap mb4"><table><thead><tr><th>PO</th><th>Title</th><th style="text-align:center">Result</th><th style="text-align:right">Score</th></tr></thead>' +
+        '<div class="tbl-wrap mb4"><table><thead><tr><th>PO</th><th>Title</th><th style="text-align:center">Result</th><th style="text-align:right">Score</th><th style="text-align:center">Breakdown</th></tr></thead>' +
         '<tbody>'+poHtml+'</tbody></table></div>' +
         '<div class="sec-title mb2">Course Outcome Attainment</div>' +
         '<div class="tbl-wrap"><table><thead><tr><th>CO</th><th>Title</th><th style="text-align:center">Result</th><th style="text-align:right">Score</th></tr></thead>' +

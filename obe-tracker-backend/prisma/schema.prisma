@@ -359,6 +359,35 @@ model Department {
   @@unique([institutionId, code])
 }
 
+// [NEW] Curriculum version.
+// POs used to hang off Program, so PO1 meant one thing for the whole programme
+// forever. Revising the curriculum meant editing outcomes that a graduated
+// cohort had already been assessed against, which destroys the one thing an
+// evaluator needs: knowing which curriculum a given batch was measured under.
+//
+// A version is a frozen outcome set. Batches point at one. Revising creates a
+// new version and copies the current outcomes as a starting point; existing
+// batches keep the version they were assessed under.
+model CurriculumVersion {
+  id          String    @id @default(cuid())
+  programId   String
+  version     Int // 1, 2, 3...
+  label       String // "BICT Curriculum 2022", "2027 revision"
+  description String?   @db.Text
+  effectiveFrom DateTime
+  effectiveTill DateTime?
+  isCurrent   Boolean   @default(false) // the one new batches default to
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  program         Program          @relation(fields: [programId], references: [id])
+  programOutcomes ProgramOutcome[]
+  sessions        Session[]
+
+  @@unique([programId, version])
+  @@index([programId, isCurrent])
+}
+
 model Program {
   id                        String    @id @default(cuid())
   departmentId              String
@@ -377,8 +406,9 @@ model Program {
   department       Department               @relation(fields: [departmentId], references: [id])
   framework        AccreditationFramework?  @relation(fields: [frameworkId], references: [id])
   specificCriteria ProgramSpecificCriteria? @relation(fields: [programSpecificCriteriaId], references: [id])
-  courses          Course[]
-  programOutcomes  ProgramOutcome[]
+  courses            Course[]
+  curriculumVersions CurriculumVersion[]
+  programOutcomes    ProgramOutcome[]
   enrolments       Enrolment[]
   peos             Peo[]
   thresholdPolicies ThresholdPolicy[]
@@ -397,6 +427,7 @@ model Session {
   startDate         DateTime
   endDate           DateTime?
   expectedGraduation DateTime?    // [NEW] drives the by-graduation PO rollup
+  curriculumVersionId String?     // [NEW] which outcome set this batch is assessed against
   status            SessionStatus @default(DRAFT)
   frozenThresholds  Json?
   createdAt         DateTime      @default(now())
@@ -404,6 +435,7 @@ model Session {
 
   institution       Institution          @relation(fields: [institutionId], references: [id])
   department        Department?          @relation(fields: [departmentId], references: [id])
+  curriculumVersion CurriculumVersion?   @relation(fields: [curriculumVersionId], references: [id])
   students          User[]
   courses           Course[]
   cohortAttainments CohortPoAttainment[]
@@ -595,6 +627,7 @@ model Enrolment {
 model ProgramOutcome {
   id                 String    @id @default(cuid())
   programId          String
+  curriculumVersionId String   // [NEW] outcomes belong to a version, not a programme
   frameworkOutcomeId String? // [NEW] null = program-defined extra outcome
   code               String
   title              String
@@ -604,15 +637,19 @@ model ProgramOutcome {
   updatedAt          DateTime  @updatedAt
   deletedAt          DateTime?
 
-  program          Program              @relation(fields: [programId], references: [id])
-  frameworkOutcome FrameworkOutcome?    @relation(fields: [frameworkOutcomeId], references: [id])
+  program           Program              @relation(fields: [programId], references: [id])
+  curriculumVersion CurriculumVersion    @relation(fields: [curriculumVersionId], references: [id], onDelete: Cascade)
+  frameworkOutcome  FrameworkOutcome?    @relation(fields: [frameworkOutcomeId], references: [id])
   mappings         CoPoMapping[]
   poAttainments    PoAttainment[]
   cohortAttainments CohortPoAttainment[]
   peoMappings      PeoPoMap[]
   cqiActions       CqiAction[]
 
-  @@unique([programId, code])
+  // PO1 is now unique per version, not per programme, so v1 and v2 can both
+  // define a PO1 that means different things.
+  @@unique([curriculumVersionId, code])
+  @@index([programId])
 }
 
 model CourseOutcome {
@@ -631,6 +668,7 @@ model CourseOutcome {
   course             Course               @relation(fields: [courseId], references: [id])
   mappings           CoPoMapping[]
   assessmentCOs      AssessmentCO[]
+  marks              Mark[]
   coAttainments      CoAttainment[]
   courseCoAttainments CourseCoAttainment[]
   knowledgeProfiles  CourseOutcomeWk[] // [NEW] s.5.3.6 WK mapping
@@ -740,11 +778,15 @@ model AssessmentSdg {
   @@id([assessmentId, sdgId])
 }
 
+// How an assessment's marks are divided between the COs it covers.
+// coMarks is absolute (12 marks of a 30-mark paper), not a fraction, because
+// that is how a question paper is actually written. The sum across an
+// assessment's COs should equal Assessment.totalMarks; the controller checks it.
 model AssessmentCO {
   id              String @id @default(cuid())
   assessmentId    String
   courseOutcomeId String
-  markShare       Float  @default(1) // [NEW] fraction of this assessment carrying the CO
+  coMarks         Float  @default(0) // [CHANGED] was markShare, a 0-1 fraction
 
   assessment    Assessment    @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
   courseOutcome CourseOutcome @relation(fields: [courseOutcomeId], references: [id])
@@ -752,20 +794,33 @@ model AssessmentCO {
   @@unique([assessmentId, courseOutcomeId])
 }
 
+// [CHANGED] Marks are now recorded per CO, not per assessment.
+//
+// A 30-mark mid-term whose questions split 12/10/8 across CO1, CO2 and CO3 used
+// to store one number per student, and the engine divided it by markShare. That
+// assumed the student performed identically on all three sections. A student who
+// scored 12/12 on CO1 and 3/8 on CO3 was credited the same percentage for both,
+// which is a number no answer script supports.
+//
+// One assessment, one row per CO per student. The exam stays one exam in the UI;
+// the marks are broken out underneath it.
 model Mark {
-  id            String   @id @default(cuid())
-  assessmentId  String
-  studentId     String
-  marksObtained Float
-  isAbsent      Boolean  @default(false) // [NEW] absent is not zero; it is excluded
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id              String   @id @default(cuid())
+  assessmentId    String
+  studentId       String
+  courseOutcomeId String   // [NEW]
+  marksObtained   Float
+  isAbsent        Boolean  @default(false) // absent is not zero; it is excluded
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  assessment Assessment @relation(fields: [assessmentId], references: [id])
-  student    User       @relation(fields: [studentId], references: [id]) // [CHANGED] real FK
+  assessment    Assessment    @relation(fields: [assessmentId], references: [id])
+  student       User          @relation(fields: [studentId], references: [id])
+  courseOutcome CourseOutcome @relation(fields: [courseOutcomeId], references: [id])
 
-  @@unique([assessmentId, studentId])
+  @@unique([assessmentId, studentId, courseOutcomeId])
   @@index([studentId])
+  @@index([assessmentId, courseOutcomeId])
 }
 
 model MarkAuditLog {
