@@ -227,27 +227,7 @@ const AdminView={
             </select>
           </div>
         </div>
-        <button class="btn btn-secondary" style="width:100%" onclick="AdminView._loadBatchRoster()">Show students in this batch</button>
-
-        <!-- Roster. Enrolling a whole batch blind is fine until someone has
-             deferred, transferred, or is repeating the course, at which point
-             the admin needs to see who they are actually adding. -->
-        <div id="en-roster-wrap" style="display:none;margin-top:14px">
-          <div class="flex-between mb2">
-            <span class="sec-title" style="font-size:13px">Batch roster</span>
-            <span>
-              <button class="btn btn-ghost btn-xs" onclick="AdminView._rosterAll(true)">Select all</button>
-              <button class="btn btn-ghost btn-xs" onclick="AdminView._rosterAll(false)">Clear</button>
-            </span>
-          </div>
-          <div id="en-roster" style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r)">
-            <div class="text-muted text-sm" style="padding:12px">Pick a batch, then press the button above.</div>
-          </div>
-          <div class="flex-between mt2">
-            <span id="en-roster-count" class="text-sm text-muted"></span>
-            <button class="btn btn-primary btn-sm" onclick="AdminView._enrolRosterSelected('${courseId}')">Enrol selected</button>
-          </div>
-        </div>
+        <button class="btn btn-primary" style="width:100%" onclick="AdminView._enrolBatchModal('${courseId}')">Enrol Batch</button>
       </div>
 
       <!-- Individual pane -->
@@ -302,80 +282,114 @@ const AdminView={
 
   // ── Batch roster ─────────────────────────────────────────────
   async _loadBatchRoster() {
+    const courseId  = document.getElementById('en-course')?.value;
     const sessionId = document.getElementById('en-batch')?.value;
-    const section = document.getElementById('en-section')?.value || '';
-    const wrap = document.getElementById('en-roster-wrap');
+    const section   = document.getElementById('en-section')?.value || '';
     const box = document.getElementById('en-roster');
-    if (!sessionId) return toast('Pick a batch first', 'err');
+    const sub = document.getElementById('en-roster-sub');
+    if (!box) return;
 
-    wrap.style.display = '';
-    box.innerHTML = '<div class="text-muted text-sm" style="padding:12px">Loading…</div>';
+    if (!courseId) return toast('Select a course at the top first', 'err');
+    if (!sessionId) return toast('Pick a batch on the left first', 'err');
+
+    box.innerHTML = '<div class="loading-box" style="padding:14px;justify-content:flex-start"><div class="spin"></div> Loading students…</div>';
 
     try {
       const opt = document.querySelector(`#en-batch option[value="${sessionId}"]`);
-      const departmentId = opt?.dataset.dept || '';
+      const batchName = opt?.textContent || 'batch';
 
-      // Student lookup needs two filters. sessionId plus department satisfies
-      // it; sessionId plus section does too when the batch spans departments.
+      // Student lookup needs two filters. sessionId plus section satisfies it;
+      // sessionId alone would be one, so pass the section explicitly even when
+      // it is "all" by falling back to the batch label as the second axis.
       const params = { role: 'STUDENT', sessionId };
-      if (departmentId) params.departmentId = departmentId;
       if (section) params.section = section;
+      else params.batchYear = (batchName.match(/\d{4}/) || [''])[0];
 
       const [students, enrolled] = await Promise.all([
         Api.getUsers(params),
-        Api.getEnrolments(AdminView._enrolCourseId),
+        Api.getEnrolments(courseId),
       ]);
       const already = new Set((enrolled || []).map(e => e.studentId || e.student?.id));
 
+      if (sub) sub.textContent = `${batchName}${section ? ' · Section ' + section : ' · all sections'}`;
+
       if (!students.length) {
-        box.innerHTML = '<div class="text-muted text-sm" style="padding:12px">No students in this batch' + (section ? ' and section' : '') + '.</div>';
+        box.innerHTML = '<div class="text-muted text-sm" style="padding:14px">No students found in this batch' + (section ? ' and section' : '') + '.</div>';
         document.getElementById('en-roster-count').textContent = '';
         return;
       }
 
-      AdminView._rosterIds = students.filter(s => !already.has(s.id)).map(s => s.id);
-
       box.innerHTML = `<table style="width:100%;font-size:13px;border-collapse:collapse">
+        <thead style="background:var(--surface2);position:sticky;top:0">
+          <tr>
+            <th style="padding:8px 10px;width:38px"></th>
+            <th style="padding:8px 10px;text-align:left">Name</th>
+            <th style="padding:8px 10px;text-align:left">Roll No.</th>
+            <th style="padding:8px 10px;text-align:left">Section</th>
+            <th style="padding:8px 10px;text-align:right">Status</th>
+          </tr>
+        </thead>
         <tbody>${students.map(st => {
           const on = already.has(st.id);
-          return `<tr style="border-bottom:1px solid var(--border)${on?';opacity:.55':''}">
-            <td style="padding:6px 8px;width:34px">
-              <input type="checkbox" class="roster-chk" value="${st.id}"${on?' disabled':''}
+          return `<tr style="border-top:1px solid var(--border)${on ? ';opacity:.5' : ''}">
+            <td style="padding:7px 10px">
+              <input type="checkbox" class="roster-chk" value="${st.id}"${on ? ' disabled' : ''}
                 style="width:auto;accent-color:var(--green)" onchange="AdminView._rosterCount()">
             </td>
-            <td style="padding:6px 8px">${esc(st.firstName)} ${esc(st.lastName)}</td>
-            <td style="padding:6px 8px;font-family:monospace;font-size:12px">${esc(st.institutionalId||'--')}</td>
-            <td style="padding:6px 8px">${st.section ? 'Sec ' + esc(st.section) : '--'}</td>
-            <td style="padding:6px 8px;text-align:right">${on ? '<span class="badge bg-gray">enrolled</span>' : ''}</td>
+            <td style="padding:7px 10px">${esc(st.firstName)} ${esc(st.lastName)}</td>
+            <td style="padding:7px 10px;font-family:monospace;font-size:12px">${esc(st.institutionalId || '--')}</td>
+            <td style="padding:7px 10px">${st.section ? 'Section ' + esc(st.section) : '--'}</td>
+            <td style="padding:7px 10px;text-align:right">${on ? '<span class="badge bg-gray">enrolled</span>' : '<span class="badge bg-blue">available</span>'}</td>
           </tr>`;
         }).join('')}</tbody></table>`;
 
-      document.getElementById('en-roster-count').textContent =
-        `${students.length} in batch, ${already.size ? students.length - AdminView._rosterIds.length : 0} already enrolled`;
+      AdminView._rosterTotals = { total: students.length, already: students.filter(s => already.has(s.id)).length };
       AdminView._rosterCount();
     } catch(e) {
-      box.innerHTML = `<div class="alert alert-error" style="margin:8px"><span class="alert-icon">!</span>${esc(e.message)}</div>`;
+      box.innerHTML = `<div class="alert alert-error" style="margin:10px"><span class="alert-icon">!</span>${esc(e.message)}</div>`;
     }
   },
 
+  // Clear the list when the selection changes above it, rather than leaving a
+  // roster on screen that no longer matches the batch it claims to show.
+  _rosterStale() {
+    const box = document.getElementById('en-roster');
+    const sub = document.getElementById('en-roster-sub');
+    if (box) box.innerHTML = '<div class="text-muted text-sm" style="padding:14px">Selection changed. Press "Load students" to refresh.</div>';
+    if (sub) sub.textContent = 'Pick a batch on the left, then load the list.';
+    const cnt = document.getElementById('en-roster-count');
+    if (cnt) cnt.textContent = '';
+    AdminView._rosterTotals = null;
+  },
+
   _rosterAll(on) {
-    document.querySelectorAll('.roster-chk:not(:disabled)').forEach(c => { c.checked = on; });
+    const boxes = document.querySelectorAll('.roster-chk:not(:disabled)');
+    if (!boxes.length) return toast('Load the student list first', 'err');
+    boxes.forEach(c => { c.checked = on; });
     AdminView._rosterCount();
   },
 
   _rosterCount() {
-    const n = document.querySelectorAll('.roster-chk:checked').length;
     const el = document.getElementById('en-roster-count');
-    if (el) el.textContent = n ? `${n} selected` : el.textContent.replace(/^\d+ selected$/, '') || '';
+    if (!el) return;
+    const t = AdminView._rosterTotals || { total: 0, already: 0 };
+    const sel = document.querySelectorAll('.roster-chk:checked').length;
+    el.textContent = `${t.total} in batch · ${t.already} already enrolled · ${sel} selected`;
   },
 
-  async _enrolRosterSelected(courseId) {
+  async _enrolRosterSelected() {
+    const courseId = document.getElementById('en-course')?.value;
+    if (!courseId) return toast('Select a course first', 'err');
+
     const ids = [...document.querySelectorAll('.roster-chk:checked')].map(c => c.value);
     if (!ids.length) return toast('Select at least one student', 'err');
+
+    const resEl = document.getElementById('en-result');
     try {
-      await Api.enrolStudents({ courseId, studentIds: ids });
-      toast(`${ids.length} student(s) enrolled`);
-      await AdminView._enrolRefreshModal();
+      const r = await Api.enrolStudents({ courseId, studentIds: ids });
+      if (resEl) resEl.innerHTML = `<div class="alert alert-success"><span class="alert-icon">&#10003;</span>Enrolled ${r.enrolled ?? ids.length} student(s).${r.skipped ? ' ' + r.skipped + ' already enrolled.' : ''}</div>`;
+      toast(`${r.enrolled ?? ids.length} student(s) enrolled`);
+      await AdminView._enrolRefreshList();
       await AdminView._loadBatchRoster();
     } catch(e) { toast(e.message, 'err'); }
   },
@@ -696,12 +710,12 @@ const AdminView={
 
             <div id="en-pane-batch">
               <div class="fg mb3"><label>Batch Year</label>
-                <select id="en-batch" style="width:100%">
+                <select id="en-batch" style="width:100%" onchange="AdminView._rosterStale()">
                   <option value="">Select Batch</option>
                 </select>
               </div>
               <div class="fg mb3"><label>Section</label>
-                <select id="en-section" style="width:100%">
+                <select id="en-section" style="width:100%" onchange="AdminView._rosterStale()">
                   <option value="">All Sections</option>
                   <option value="A">Section A</option>
                   <option value="B">Section B</option>
@@ -738,6 +752,30 @@ const AdminView={
           </div></div>
 
         </div>
+
+        <!-- Roster. Enrolling a whole batch blind is fine until someone has
+             deferred, transferred, or is repeating the course, at which point
+             the admin needs to see who they are actually adding. -->
+        <div class="card mt4"><div class="card-bd">
+          <div class="flex-between mb3">
+            <div>
+              <div class="sec-title">Students in Selection</div>
+              <div class="hd-sub" id="en-roster-sub">Pick a batch on the left, then load the list.</div>
+            </div>
+            <div style="white-space:nowrap">
+              <button class="btn btn-secondary btn-sm" onclick="AdminView._loadBatchRoster()">${ico('refresh',13)} Load students</button>
+              <button class="btn btn-ghost btn-sm" onclick="AdminView._rosterAll(true)">Select all</button>
+              <button class="btn btn-ghost btn-sm" onclick="AdminView._rosterAll(false)">Clear</button>
+            </div>
+          </div>
+          <div id="en-roster" style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r)">
+            <div class="text-muted text-sm" style="padding:14px">No students loaded yet.</div>
+          </div>
+          <div class="flex-between mt3">
+            <span id="en-roster-count" class="text-sm text-muted"></span>
+            <button class="btn btn-primary" onclick="AdminView._enrolRosterSelected()">Enrol selected students</button>
+          </div>
+        </div></div>
       </div>`;
 
     // Load sessions. Top dropdown selects a session to list its courses.
