@@ -327,8 +327,10 @@ const FacultyView = {
           // weight is a real weight again, so reading it here showed nonsense.
           const attMark = a.attainmentMark != null ? a.attainmentMark : Math.floor(a.totalMarks * 0.6);
           const t = (a.title||'').replace(/'/g,'&#39;');
+          // Parenthesise the allocation. A bare space ran the code into the
+          // number, so "CO1" with 20 marks rendered as "CO120".
           const coBadges = (a.assessmentCOs||[])
-            .map(ac => `<span class="badge bg-green" title="${ac.coMarks} of ${a.totalMarks} marks">${ac.courseOutcome?.code||''} <span style="opacity:.75">${ac.coMarks}</span></span>`)
+            .map(ac => `<span class="badge bg-green" title="${ac.coMarks} of ${a.totalMarks} marks assess this outcome">${ac.courseOutcome?.code||''}<span style="opacity:.7;font-weight:400;margin-left:4px">(${ac.coMarks})</span></span>`)
             .join(' ') || '<span class="text-muted">none</span>';
           return `<tr>
             <td class="fw7">${esc(a.title)}</td>
