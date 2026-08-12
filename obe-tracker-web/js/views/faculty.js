@@ -404,97 +404,9 @@ const FacultyView = {
       var pb = document.getElementById('parse-marks-btn');
       var cb = document.getElementById('confirm-marks-btn');
       var _aid = aid; var _tm = totalMarks;
-      if (pb) pb.onclick = function() { FacultyView._parseMarksFile(_aid, _tm); };
-      if (cb) cb.onclick = function() { FacultyView._confirmMarksUpload(_aid, _tm); };
+      if (pb) pb.onclick = function() { FacultyView._parseMarksFile(_aid); };
+      if (cb) cb.onclick = function() { FacultyView._confirmMarksUpload(_aid); };
     }, 50);
-  },
-
-  async _dlMarksTemplate(aid) {
-    try {
-      const marks = await Api.getMarks(aid);
-      const rows = ['institutionalId,marks', ...marks.map(m => m.institutionalId + ',')];
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([rows.join('\n')], {type:'text/csv'}));
-      a.download = 'marks_template.csv'; a.click();
-    } catch(e) { toast(e.message, 'err'); }
-  },
-
-  async _parseMarksFile(aid, totalMarks) {
-    const file = document.getElementById('marks-upload-file')?.files[0];
-    if (!file) return toast('Select a file first', 'err');
-    const preview = document.getElementById('marks-upload-preview');
-    preview.innerHTML = '<div class="loading-box" style="padding:10px 0"><div class="spin"></div> Reading...</div>';
-    try {
-      let rows = [];
-      const tm = parseFloat(totalMarks);
-      if (file.name.endsWith('.csv')) {
-        const text = await file.text();
-        const lines = text.trim().split('\n');
-        const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g,'').toLowerCase());
-        const idIdx = headers.findIndex(h => h.includes('id') || h.includes('roll'));
-        const markIdx = headers.findIndex(h => h.includes('mark') || h.includes('score'));
-        rows = lines.slice(1).filter(l => l.trim()).map(line => {
-          const vals = line.split(',').map(v => v.trim().replace(/^"|"$/g,''));
-          return { institutionalId: vals[idIdx]||'', marks: vals[markIdx]||'' };
-        });
-      } else {
-        const ab = await file.arrayBuffer();
-        const XLSX = await import('https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs');
-        const wb = XLSX.read(ab);
-        const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:''});
-        rows = raw.map(r => ({
-          institutionalId: String(r.institutionalId||r['Institutional ID']||r.rollNumber||r.roll||'').trim(),
-          marks: String(r.marks||r.Marks||r.score||r.Score||'').trim(),
-        }));
-      }
-      rows = rows.filter(r => r.institutionalId);
-      if (!rows.length) { preview.innerHTML = '<div class="alert alert-warn">No data found.</div>'; return; }
-
-      // Validate
-      const invalid = rows.filter(r => r.marks !== '' && (isNaN(parseFloat(r.marks)) || parseFloat(r.marks) < 0 || parseFloat(r.marks) > tm));
-      preview.innerHTML = '<div class="sec-title mb2">Preview - ' + rows.length + ' students</div>' +
-        (invalid.length ? '<div class="alert alert-warn mb2">&#9888; ' + invalid.length + ' row(s) have invalid marks (will be skipped)</div>' : '') +
-        '<div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r)">' +
-        '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead style="background:var(--surface2)"><tr>' +
-        '<th style="padding:7px 10px">Roll No.</th><th style="padding:7px 10px">Marks</th><th style="padding:7px 10px">%</th><th style="padding:7px 10px">Status</th>' +
-        '</tr></thead><tbody>' +
-        rows.map((r,i) => {
-          const m = parseFloat(r.marks);
-          const valid = r.marks !== '' && !isNaN(m) && m >= 0 && m <= tm;
-          const pct = valid ? (m/tm*100).toFixed(1)+'%' : '-';
-          const st = !r.marks ? '<span class="text-muted">Empty</span>' : valid ? '<span class="badge '+(m/tm>=0.6?'bg-green':'bg-red')+'">'+(m/tm>=0.6?'Pass':'Fail')+'</span>' : '<span class="badge bg-red">Invalid</span>';
-          return '<tr style="background:'+(i%2?'var(--surface2)':'var(--surface)')+'"><td style="padding:6px 10px;border-top:1px solid var(--border);font-family:monospace">'+r.institutionalId+'</td><td style="padding:6px 10px;border-top:1px solid var(--border);font-weight:700">'+( r.marks||'-')+'</td><td style="padding:6px 10px;border-top:1px solid var(--border)">'+pct+'</td><td style="padding:6px 10px;border-top:1px solid var(--border)">'+st+'</td></tr>';
-        }).join('') + '</tbody></table></div>';
-      window._parsedMarks = rows;
-      toast(rows.length + ' rows parsed. Click Confirm Upload.', 'ok');
-    } catch(e) { preview.innerHTML = '<div class="alert alert-error"><span class="alert-icon">!</span>' + e.message + '</div>'; }
-  },
-
-  async _confirmMarksUpload(aid, totalMarks) {
-    const parsed = window._parsedMarks;
-    if (!parsed || !parsed.length) return toast('Parse a file first', 'err');
-    // Match institutionalId to studentId
-    try {
-      const allMarks = await Api.getMarks(aid);
-      const idMap = Object.fromEntries(allMarks.map(m => [m.institutionalId, m.studentId]));
-      const tm = parseFloat(totalMarks);
-      const marks = [];
-      const skipped = [];
-      for (const r of parsed) {
-        if (!r.marks) continue;
-        const m = parseFloat(r.marks);
-        if (isNaN(m) || m < 0 || m > tm) { skipped.push(r.institutionalId); continue; }
-        const sid = idMap[r.institutionalId];
-        if (!sid) { skipped.push(r.institutionalId + ' (not enrolled)'); continue; }
-        marks.push({ studentId: sid, marksObtained: m });
-      }
-      if (!marks.length) return toast('No valid marks to upload', 'err');
-      await Api.saveMarks(aid, marks);
-      toast('Uploaded ' + marks.length + ' marks' + (skipped.length ? ', skipped ' + skipped.length : ''));
-      closeModal();
-      window._parsedMarks = null;
-      this._loadAssess();
-    } catch(e) { toast(e.message, 'err'); }
   },
 
   async _viewStudentAttainment(courseId, studentId, studentName) {
@@ -546,6 +458,144 @@ const FacultyView = {
     } catch(e) { document.getElementById('modal-body').innerHTML = '<div class="alert alert-error"><span class="alert-icon">!</span>' + e.message + '</div>'; }
   },
 
+  // ── CSV / Excel upload ───────────────────────────────────────
+  // Marks are per CO, so the sheet needs a column per CO rather than a single
+  // marks column. The old parser read one number per student and posted it
+  // without a courseOutcomeId, which the API now rejects outright.
+
+  async _dlMarksTemplate(aid) {
+    try {
+      const res = await Api.getMarks(aid);
+      const cols = res.columns || [];
+      const rows = res.students || [];
+      if (!cols.length) return toast('This assessment has no COs attached', 'err');
+
+      const header = ['institutionalId', ...cols.map(c => `${c.code} (max ${c.coMarks})`), 'name'];
+      const body = rows.map(r => [r.institutionalId, ...cols.map(() => ''), r.name]);
+      const csv = [header, ...body].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      a.download = 'marks_template.csv';
+      a.click();
+    } catch(e) { toast(e.message, 'err'); }
+  },
+
+  async _parseMarksFile(aid) {
+    const file = document.getElementById('marks-upload-file')?.files[0];
+    if (!file) return toast('Select a file first', 'err');
+    const preview = document.getElementById('marks-upload-preview');
+    preview.innerHTML = '<div class="loading-box" style="padding:10px 0"><div class="spin"></div> Reading...</div>';
+
+    try {
+      const meta = await Api.getMarks(aid);
+      const cols = meta.columns || [];
+      if (!cols.length) { preview.innerHTML = '<div class="alert alert-warn">This assessment has no COs attached.</div>'; return; }
+
+      let table = [];
+      if (file.name.endsWith('.csv')) {
+        const lines = (await file.text()).trim().split('\n');
+        table = lines.map(l => l.split(',').map(v => v.trim().replace(/^"|"$/g, '')));
+      } else {
+        const ab = await file.arrayBuffer();
+        const XLSX = await import('https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs');
+        const wb = XLSX.read(ab);
+        table = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })
+          .map(r => r.map(v => String(v).trim()));
+      }
+      if (table.length < 2) { preview.innerHTML = '<div class="alert alert-warn">No data rows found.</div>'; return; }
+
+      // Match columns by CO code in the header rather than by position, so a
+      // reordered sheet still files each mark against the right outcome.
+      const header = table[0].map(h => h.toLowerCase());
+      const idIdx = header.findIndex(h => h.includes('id') || h.includes('roll'));
+      if (idIdx < 0) { preview.innerHTML = '<div class="alert alert-error">No student id column found. Download the template.</div>'; return; }
+
+      const colIdx = cols.map(c => header.findIndex(h => h.startsWith(c.code.toLowerCase())));
+      const missing = cols.filter((c, i) => colIdx[i] < 0).map(c => c.code);
+      if (missing.length) {
+        preview.innerHTML = `<div class="alert alert-error"><span class="alert-icon">!</span>No column found for ${missing.join(', ')}. Download the template rather than building the sheet by hand.</div>`;
+        return;
+      }
+
+      const rows = [];
+      for (const raw of table.slice(1)) {
+        const rollNo = raw[idIdx];
+        if (!rollNo) continue;
+        const cells = cols.map((c, i) => (raw[colIdx[i]] ?? '').trim());
+        rows.push({ institutionalId: rollNo, cells });
+      }
+      if (!rows.length) { preview.innerHTML = '<div class="alert alert-warn">No rows with a student id.</div>'; return; }
+
+      let bad = 0;
+      const cellState = (v, max) => {
+        if (v === '') return { cls: 'text-muted', txt: 'empty' };
+        if (v.toLowerCase() === 'a') return { cls: 'badge bg-gray', txt: 'absent' };
+        const n = parseFloat(v);
+        if (isNaN(n) || n < 0 || n > max) { bad++; return { cls: 'badge bg-red', txt: 'invalid' }; }
+        return { cls: '', txt: v };
+      };
+
+      const bodyHtml = rows.map((r, i) => {
+        const tds = r.cells.map((v, ci) => {
+          const st = cellState(v, cols[ci].coMarks);
+          return `<td style="padding:6px 10px;border-top:1px solid var(--border)"><span class="${st.cls}">${st.txt}</span></td>`;
+        }).join('');
+        return `<tr style="background:${i%2?'var(--surface2)':'var(--surface)'}">
+          <td style="padding:6px 10px;border-top:1px solid var(--border);font-family:monospace">${esc(r.institutionalId)}</td>${tds}</tr>`;
+      }).join('');
+
+      preview.innerHTML =
+        `<div class="sec-title mb2">Preview - ${rows.length} students, ${cols.length} CO column(s)</div>` +
+        (bad ? `<div class="alert alert-warn mb2">&#9888; ${bad} cell(s) out of range for their CO and will be skipped</div>` : '') +
+        '<div style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r)">' +
+        '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead style="background:var(--surface2)"><tr>' +
+        '<th style="padding:7px 10px">Roll No.</th>' +
+        cols.map(c => `<th style="padding:7px 10px">${c.code} <span class="text-muted">/${c.coMarks}</span></th>`).join('') +
+        '</tr></thead><tbody>' + bodyHtml + '</tbody></table></div>';
+
+      window._parsedMarks = { rows, cols };
+      toast(`${rows.length} rows parsed. Click Confirm Upload.`, 'ok');
+    } catch(e) {
+      preview.innerHTML = `<div class="alert alert-error"><span class="alert-icon">!</span>${esc(e.message)}</div>`;
+    }
+  },
+
+  async _confirmMarksUpload(aid) {
+    const parsed = window._parsedMarks;
+    if (!parsed || !parsed.rows.length) return toast('Parse a file first', 'err');
+
+    try {
+      const meta = await Api.getMarks(aid);
+      const idMap = Object.fromEntries((meta.students || []).map(m => [m.institutionalId, m.studentId]));
+
+      const marks = [];
+      const skipped = [];
+      for (const r of parsed.rows) {
+        const sid = idMap[r.institutionalId];
+        if (!sid) { skipped.push(r.institutionalId + ' (not enrolled)'); continue; }
+
+        r.cells.forEach((v, ci) => {
+          const col = parsed.cols[ci];
+          if (v === '') return; // blank means not marked, which is not zero
+          if (v.toLowerCase() === 'a') {
+            marks.push({ studentId: sid, courseOutcomeId: col.courseOutcomeId, marksObtained: 0, isAbsent: true });
+            return;
+          }
+          const n = parseFloat(v);
+          if (isNaN(n) || n < 0 || n > col.coMarks) { skipped.push(`${r.institutionalId} ${col.code}`); return; }
+          marks.push({ studentId: sid, courseOutcomeId: col.courseOutcomeId, marksObtained: n, isAbsent: false });
+        });
+      }
+
+      if (!marks.length) return toast('No valid marks to upload', 'err');
+      await Api.saveMarks(aid, marks);
+      toast(`${marks.length} mark entries uploaded${skipped.length ? `, ${skipped.length} skipped` : ''}`);
+      closeModal();
+      this._loadAssess();
+    } catch(e) { toast(e.message, 'err'); }
+  },
+
   // ── Assessment create / edit ─────────────────────────────────
   // Each CO gets its own mark allocation, and the allocations must add up to
   // the paper total. 12 + 10 on a 30-mark paper would mean 8 marks are assessed
@@ -554,8 +604,11 @@ const FacultyView = {
   async _addAssess() { return this._assessDialog(null); },
 
   async _editAssess(aid) {
-    const list = await Api.getAssessments(this._cid);
-    const a = (list || []).find(x => x.id === aid);
+    // getAssessments returns { assessments: [...] }, not a bare array. Treating
+    // the object as an array made .find() return undefined every time, so Edit
+    // always reported "Assessment not found".
+    const { assessments } = await Api.getAssessments(this._cid);
+    const a = (assessments || []).find(x => x.id === aid);
     if (!a) return toast('Assessment not found', 'err');
     return this._assessDialog(a);
   },
