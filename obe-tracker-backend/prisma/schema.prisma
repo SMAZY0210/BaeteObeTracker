@@ -69,12 +69,6 @@ enum SessionStatus {
   ARCHIVED
 }
 
-enum BloomDomain {
-  COGNITIVE
-  AFFECTIVE
-  PSYCHOMOTOR
-}
-
 enum ComplexAttrKind {
   PROBLEM // WP1..WP7
   ACTIVITY // EA1..EA5
@@ -660,8 +654,10 @@ model CourseOutcome {
   code        String
   title       String
   description String?      @db.Text
-  bloomDomain BloomDomain?
-  bloomLevel  Int?
+  // Bloom's domain and level lived here. Neither ACC-MAN-02 v3.0 nor BAETE's own
+  // V3 training deck mentions Bloom's taxonomy anywhere: the classification the
+  // criteria ask for is the Knowledge Profile (WK1-WK9) plus the complexity
+  // attributes (WP1-WP7, EA1-EA5), which are held in the join tables below.
   isActive    Boolean      @default(true)
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt

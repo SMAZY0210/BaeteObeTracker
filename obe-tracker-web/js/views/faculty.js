@@ -84,8 +84,8 @@ const FacultyView = {
     el.innerHTML = `<div class="flex-between mb3"><span class="sec-title">Course Outcomes</span>
       <button class="btn btn-primary btn-sm" onclick="FacultyView._addCO()">${ico('plus')} Add CO</button></div>
       <div class="tbl-wrap"><table><thead><tr>
-        <th>Code</th><th>Title</th><th>Bloom's</th><th>WK / WP / EA</th><th>Maps to POs</th><th class="td-r">Actions</th>
-      </tr></thead><tbody id="co-tb">${tdLoad(6)}</tbody></table></div>`;
+        <th>Code</th><th>Title</th><th>WK / WP / EA</th><th>Maps to POs</th><th class="td-r">Actions</th>
+      </tr></thead><tbody id="co-tb">${tdLoad(5)}</tbody></table></div>`;
     try {
       const list = await Api.getCourseOutcomes(this._cid);
       document.getElementById('co-tb').innerHTML = list.length ? list.map(co => {
@@ -96,7 +96,6 @@ const FacultyView = {
         return `<tr>
           <td><span class="badge bg-green">${co.code}</span></td>
           <td><div class="fw7">${co.title}</div>${co.description?`<div class="text-sm text-muted">${co.description}</div>`:''}</td>
-          <td>${co.bloomDomain?`<span class="badge bg-gray">${co.bloomDomain.charAt(0)}${co.bloomLevel||''}</span>`:'-'}</td>
           <td>${(()=>{
             const wk=(co.knowledgeProfiles||[]).map(k=>`<span class="badge bg-blue" title="${esc(k.knowledgeProfile.attribute||'')}">${k.knowledgeProfile.code}</span>`);
             const ca=(co.complexAttributes||[]).map(k=>`<span class="badge ${k.complexAttribute.kind==='PROBLEM'?'bg-amber':'bg-dark'}" title="${esc(k.complexAttribute.attribute||'')}">${k.complexAttribute.code}</span>`);
@@ -105,7 +104,7 @@ const FacultyView = {
           })()}</td>
           <td>${poLinks}</td>
           <td class="td-r" style="white-space:nowrap;vertical-align:middle">
-            <button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="FacultyView._editCO('${co.id}','${co.code}','${co.title.replace(/'/g,"&#39;")}','${(co.description||'').replace(/'/g,"&#39;")}','${co.bloomDomain||''}',${co.bloomLevel||'null'},'${(co.knowledgeProfiles||[]).map(k=>k.knowledgeProfile.code).join(',')}','${(co.complexAttributes||[]).map(k=>k.complexAttribute.code).join(',')}')">${ico('edit',13)} Edit</button>
+            <button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="FacultyView._editCO('${co.id}','${co.code}','${co.title.replace(/'/g,"&#39;")}','${(co.description||'').replace(/'/g,"&#39;")}','${(co.knowledgeProfiles||[]).map(k=>k.knowledgeProfile.code).join(',')}','${(co.complexAttributes||[]).map(k=>k.complexAttribute.code).join(',')}')">${ico('edit',13)} Edit</button>
             <button class="icon-btn danger" style="vertical-align:middle" onclick="FacultyView._delCO('${co.id}','${co.code}')">${ico('trash',13)}</button>
           </td>
         </tr>`;
@@ -118,13 +117,6 @@ const FacultyView = {
     // Fetch POs for this course's program
     const { programOutcomes: pos } = await Api.getMapping(this._cid);
 
-    // Bloom's level labels per domain
-    const bloomLevels = {
-      COGNITIVE:    ['1 - Remember','2 - Understand','3 - Apply','4 - Analyse','5 - Evaluate','6 - Create'],
-      AFFECTIVE:    ['1 - Receiving','2 - Responding','3 - Valuing','4 - Organising','5 - Characterising'],
-      PSYCHOMOTOR:  ['1 - Imitation','2 - Manipulation','3 - Precision','4 - Articulation','5 - Naturalisation'],
-    };
-
     showModal('Add Course Outcome', `
       <div class="form-row fr2 mb3">
         <div class="fg"><label>Code</label><input id="mco-code" placeholder="e.g. CO1"></div>
@@ -133,23 +125,6 @@ const FacultyView = {
       <div class="fg mb3"><label>Description <span class="text-muted">(optional)</span></label><textarea id="mco-desc" rows="2"></textarea></div>
 
       <div class="divider"></div>
-      <div class="form-row fr2 mb3">
-        <div class="fg">
-          <label>Bloom's Domain</label>
-          <select id="mco-bloom" onchange="FacultyView._updateBloomLevels()">
-            <option value="">- None -</option>
-            <option value="COGNITIVE">Cognitive (6 levels)</option>
-            <option value="AFFECTIVE">Affective (5 levels)</option>
-            <option value="PSYCHOMOTOR">Psychomotor (5 levels)</option>
-          </select>
-        </div>
-        <div class="fg">
-          <label>Bloom's Level</label>
-          <select id="mco-blvl" disabled>
-            <option value="">Select domain first</option>
-          </select>
-        </div>
-      </div>
 
       <div class="fg mb3">
         <label>BAETE Attributes <span class="text-muted">(click a card to read the full wording)</span></label>
@@ -166,22 +141,6 @@ const FacultyView = {
       `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
        <button class="btn btn-primary" onclick="FacultyView._saveCO()">${ico('save')} Add CO</button>`, true);
 
-    // Store bloom levels for use by the onchange handler
-    window._bloomLevels = bloomLevels;
-  },
-
-  _updateBloomLevels() {
-    const domain = document.getElementById('mco-bloom').value;
-    const sel = document.getElementById('mco-blvl');
-    if (!domain) {
-      sel.innerHTML = '<option value="">Select domain first</option>';
-      sel.disabled = true;
-      return;
-    }
-    const levels = window._bloomLevels[domain] || [];
-    sel.innerHTML = '<option value="">- Select level -</option>' +
-      levels.map((lbl, i) => `<option value="${i+1}">${lbl}</option>`).join('');
-    sel.disabled = false;
   },
 
   async _saveCO() {
@@ -189,8 +148,6 @@ const FacultyView = {
       code: document.getElementById('mco-code').value.trim(),
       title: document.getElementById('mco-title').value.trim(),
       description: document.getElementById('mco-desc').value.trim() || null,
-      bloomDomain: document.getElementById('mco-bloom').value || null,
-      bloomLevel: parseInt(document.getElementById('mco-blvl').value) || null,
       knowledgeProfileCodes: selectedWkCodes(),
       complexAttributeCodes: selectedCaCodes(),
     };
@@ -231,21 +188,11 @@ const FacultyView = {
 
   // wkRaw and caRaw are comma-separated code lists already on this outcome,
   // passed through the onclick attribute rather than refetched.
-  async _editCO(coId, code, title, description, bloomDomain, bloomLevel, wkRaw, caRaw) {
+  async _editCO(coId, code, title, description, wkRaw, caRaw) {
     const attrs = await loadOutcomeAttributes();
     const currentWk = (wkRaw || '').split(',').filter(Boolean);
     const currentCa = (caRaw || '').split(',').filter(Boolean);
-    const bloomLevels = {
-      COGNITIVE:   ['1 - Remember','2 - Understand','3 - Apply','4 - Analyse','5 - Evaluate','6 - Create'],
-      AFFECTIVE:   ['1 - Receiving','2 - Responding','3 - Valuing','4 - Organising','5 - Characterising'],
-      PSYCHOMOTOR: ['1 - Imitation','2 - Manipulation','3 - Precision','4 - Articulation','5 - Naturalisation'],
-    };
-    window._bloomLevels = bloomLevels;
-    const makeLvlOpts = (domain, current) => {
-      if (!domain) return '<option value="">Select domain first</option>';
-      return '<option value="">- Select level -</option>' +
-        (bloomLevels[domain]||[]).map((lbl,i)=>`<option value="${i+1}" ${current==i+1?'selected':''}>${lbl}</option>`).join('');
-    };
+
     showModal('Edit Course Outcome', `
       <div class="form-row fr2 mb3">
         <div class="fg"><label>Code</label><input id="eco-code" value="${code}"></div>
@@ -253,21 +200,6 @@ const FacultyView = {
       </div>
       <div class="fg mb3"><label>Description <span class="text-muted">(optional)</span></label>
         <textarea id="eco-desc" rows="2">${description||''}</textarea></div>
-      <div class="form-row fr2 mb3">
-        <div class="fg"><label>Bloom's Domain</label>
-          <select id="eco-bloom" onchange="FacultyView._updateEditBloomLevels()">
-            <option value="" ${!bloomDomain?'selected':''}>- None -</option>
-            <option value="COGNITIVE" ${bloomDomain==='COGNITIVE'?'selected':''}>Cognitive (6 levels)</option>
-            <option value="AFFECTIVE" ${bloomDomain==='AFFECTIVE'?'selected':''}>Affective (5 levels)</option>
-            <option value="PSYCHOMOTOR" ${bloomDomain==='PSYCHOMOTOR'?'selected':''}>Psychomotor (5 levels)</option>
-          </select>
-        </div>
-        <div class="fg"><label>Bloom's Level</label>
-          <select id="eco-blvl" ${!bloomDomain?'disabled':''}>
-            ${makeLvlOpts(bloomDomain, bloomLevel)}
-          </select>
-        </div>
-      </div>
       <div class="fg mb3">
         <label>BAETE Attributes <span class="text-muted">(click a card to read the full wording)</span></label>
         ${outcomeAttrSelectorHTML(attrs, currentWk, currentCa)}
@@ -276,22 +208,11 @@ const FacultyView = {
        <button class="btn btn-primary" onclick="FacultyView._saveEditCO('${coId}')">${ico('save')} Save CO</button>`, true);
   },
 
-  _updateEditBloomLevels() {
-    const domain = document.getElementById('eco-bloom').value;
-    const sel = document.getElementById('eco-blvl');
-    if (!domain) { sel.innerHTML = '<option value="">Select domain first</option>'; sel.disabled = true; return; }
-    sel.innerHTML = '<option value="">- Select level -</option>' +
-      (window._bloomLevels[domain]||[]).map((lbl,i)=>`<option value="${i+1}">${lbl}</option>`).join('');
-    sel.disabled = false;
-  },
-
   async _saveEditCO(coId) {
     const d = {
       code:        document.getElementById('eco-code').value.trim(),
       title:       document.getElementById('eco-title').value.trim(),
       description: document.getElementById('eco-desc').value.trim() || null,
-      bloomDomain: document.getElementById('eco-bloom').value || null,
-      bloomLevel:  parseInt(document.getElementById('eco-blvl').value) || null,
       knowledgeProfileCodes: selectedWkCodes(),
       complexAttributeCodes: selectedCaCodes(),
     };

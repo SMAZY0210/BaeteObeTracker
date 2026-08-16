@@ -125,7 +125,7 @@ const createCourseOutcome = async (req, res, next) => {
     const { courseId } = req.params;
     await assertFacultyOwns(req.user, courseId);
     const {
-      code, title, description, bloomDomain, bloomLevel,
+      code, title, description,
       knowledgeProfileCodes, complexAttributeCodes,
     } = req.body;
 
@@ -141,7 +141,7 @@ const createCourseOutcome = async (req, res, next) => {
 
     const item = await prisma.courseOutcome.create({
       data: {
-        courseId, code, title, description, bloomDomain, bloomLevel,
+        courseId, code, title, description,
         knowledgeProfiles: { create: wkIds.map((id) => ({ knowledgeProfileId: id })) },
         complexAttributes: { create: caIds.map((id) => ({ complexAttributeId: id })) },
       },
@@ -160,7 +160,7 @@ const updateCourseOutcome = async (req, res, next) => {
     const { courseId, id } = req.params;
     await assertFacultyOwns(req.user, courseId);
     const {
-      code, title, description, bloomDomain, bloomLevel,
+      code, title, description,
       knowledgeProfileCodes, complexAttributeCodes,
     } = req.body;
 
@@ -199,7 +199,7 @@ const updateCourseOutcome = async (req, res, next) => {
       }
       return tx.courseOutcome.update({
         where: { id },
-        data: { code, title, description, bloomDomain, bloomLevel },
+        data: { code, title, description },
         include: CO_INCLUDE,
       });
     });

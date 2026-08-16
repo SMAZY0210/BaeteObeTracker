@@ -45,7 +45,17 @@ const getMyAttainment = async (req, res, next) => {
     const [coAttainments, poAttainments] = await Promise.all([
       prisma.coAttainment.findMany({
         where: { courseId, studentId },
-        include: { courseOutcome: { select: { code: true, title: true, bloomDomain: true, bloomLevel: true, profileType: true, profileCode: true } } },
+        // profileType and profileCode were dropped with the old taxonomy, and
+        // Bloom's is not a BAETE classification. The WK / WP / EA links are what
+        // the criteria ask for, so those come through instead.
+        include: {
+          courseOutcome: {
+            select: {
+              code: true, title: true,
+              knowledgeProfiles: { select: { knowledgeProfile: { select: { code: true } } } },
+            },
+          },
+        },
       }),
       prisma.poAttainment.findMany({
         where: { courseId, studentId },

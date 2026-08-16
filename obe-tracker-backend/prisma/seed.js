@@ -323,7 +323,6 @@ async function main() {
       courseId: sre.id, code: 'CO1',
       title: 'Software Process & Requirement Elicitation',
       description: 'Understand and apply software process models and elicit requirements from stakeholders using structured techniques.',
-      bloomDomain: 'COGNITIVE', bloomLevel: 3,
     },
   });
 
@@ -335,7 +334,6 @@ async function main() {
       courseId: sre.id, code: 'CO2',
       title: 'Requirements Analysis & Specification',
       description: 'Analyse, model and formally specify software requirements using use-case diagrams, user stories and SRS documents.',
-      bloomDomain: 'COGNITIVE', bloomLevel: 4,
     },
   });
 
@@ -347,7 +345,6 @@ async function main() {
       courseId: sre.id, code: 'CO3',
       title: 'Requirements Validation & Management',
       description: 'Evaluate, validate and manage software requirements through reviews, prototyping and change control processes.',
-      bloomDomain: 'COGNITIVE', bloomLevel: 5,
     },
   });
   console.log('✓ COs for ICE-3207 (SRE)');
@@ -361,7 +358,6 @@ async function main() {
       courseId: web.id, code: 'CO1',
       title: 'Front-End Web Development',
       description: 'Apply HTML5, CSS3 and JavaScript to design and implement accessible, responsive web interfaces.',
-      bloomDomain: 'COGNITIVE', bloomLevel: 3,
     },
   });
 
@@ -373,7 +369,6 @@ async function main() {
       courseId: web.id, code: 'CO2',
       title: 'Server-Side & Database Integration',
       description: 'Develop dynamic web applications integrating server-side scripting, RESTful APIs and relational databases.',
-      bloomDomain: 'COGNITIVE', bloomLevel: 4,
     },
   });
 
@@ -385,7 +380,6 @@ async function main() {
       courseId: web.id, code: 'CO3',
       title: 'Web Security & Deployment',
       description: 'Evaluate common web security vulnerabilities and apply best practices to deploy secure, maintainable web applications.',
-      bloomDomain: 'COGNITIVE', bloomLevel: 5,
     },
   });
   console.log('✓ COs for ICE-3205 (Web Technologies)');
@@ -399,7 +393,6 @@ async function main() {
       courseId: ai.id, code: 'CO1',
       title: 'AI Fundamentals & Knowledge Representation',
       description: 'Explain core AI concepts, search strategies and knowledge representation schemes including logic and semantic networks.',
-      bloomDomain: 'COGNITIVE', bloomLevel: 2,
     },
   });
 
@@ -411,7 +404,6 @@ async function main() {
       courseId: ai.id, code: 'CO2',
       title: 'Machine Learning Model Design',
       description: 'Design, implement and evaluate supervised and unsupervised machine learning models to solve well-defined engineering problems.',
-      bloomDomain: 'COGNITIVE', bloomLevel: 4,
     },
   });
 
@@ -423,7 +415,6 @@ async function main() {
       courseId: ai.id, code: 'CO3',
       title: 'AI Ethics & Societal Impact',
       description: 'Assess ethical considerations, bias, fairness and the societal impact of AI systems in engineering contexts.',
-      bloomDomain: 'AFFECTIVE', bloomLevel: 4,
     },
   });
   console.log('✓ COs for ICE-4107 (Artificial Intelligence)');
@@ -701,11 +692,11 @@ async function main() {
   console.log(`  ICE-3205  Web Technologies                      Batch 2023  ← ${students.length} students enrolled`);
   console.log('  ICE-4107  Artificial Intelligence               Batch 2022  ← nobody enrolled');
   console.log('');
-  console.log('  Course Outcomes (3 per course, with Bloom\'s + profiles + CO-PO maps)');
+  console.log('  Course Outcomes (3 per course, with CO-PO maps)');
   console.log('  ─────────────────────────────────────────────────────────────────');
-  console.log('  ICE-3207  CO1 Software Process (Cog L3) · CO2 Req Analysis (Cog L4) · CO3 Validation (Cog L5)');
-  console.log('  ICE-3205  CO1 Front-End Dev (Cog L3)   · CO2 Server-Side (Cog L4)   · CO3 Security (Cog L5)');
-  console.log('  ICE-4107  CO1 AI Fundamentals (Cog L2) · CO2 ML Design (Cog L4)     · CO3 AI Ethics (Aff L4)');
+  console.log('  ICE-3207  CO1 Software Process · CO2 Req Analysis · CO3 Validation');
+  console.log('  ICE-3205  CO1 Front-End Dev   · CO2 Server-Side   · CO3 Security');
+  console.log('  ICE-4107  CO1 AI Fundamentals · CO2 ML Design     · CO3 AI Ethics');
 
   // ── Assessments & Sample Marks (ICE-3207 only - Batch 2023) ──
   // Weightage plan (no FINAL - excluded as requested):

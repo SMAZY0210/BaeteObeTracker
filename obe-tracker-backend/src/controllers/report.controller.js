@@ -2,6 +2,10 @@ const path = require('path');
 const fs = require('fs');
 const prisma = require('../prisma');
 
+/** WK codes on a course outcome, for report lines. */
+const wkCodes = (co) =>
+  (co.knowledgeProfiles || []).map((k) => k.knowledgeProfile.code).join(', ');
+
 const REPORTS_DIR = process.env.REPORTS_DIR || '/tmp/obe-reports';
 try { fs.mkdirSync(REPORTS_DIR, { recursive: true }); } catch(e) {}
 
@@ -34,7 +38,13 @@ const generateCourseReport = async (req, res, next) => {
 
     const coAttainments = await prisma.coAttainment.findMany({
       where: { courseId },
-      include: { courseOutcome: true },
+      // knowledgeProfiles must be loaded or wkCodes() silently returns empty
+      // and the report line loses its only classification.
+      include: {
+        courseOutcome: {
+          include: { knowledgeProfiles: { include: { knowledgeProfile: { select: { code: true } } } } },
+        },
+      },
     });
     const poAttainments = await prisma.poAttainment.findMany({
       where: { courseId },
@@ -123,7 +133,10 @@ async function generateCoursePdf(course, coAttainments, poAttainments, filePath,
     Object.values(coMap).forEach(({ co, percentages }) => {
       const avg = percentages.reduce((s, p) => s + p, 0) / percentages.length;
       doc.fontSize(10).font('Helvetica')
-        .text(`${co.code}: ${co.title} - Avg: ${avg.toFixed(1)}% [${co.profileType || 'N/A'} / ${co.bloomDomain || 'N/A'}${co.bloomLevel || ''}]`);
+        // Was "[profileType / bloomDomain+level]". Both are gone: the profile
+        // columns no longer exist and Bloom's is not a BAETE classification.
+        // WK codes are what an evaluator reads this line for.
+        .text(`${co.code}: ${co.title} - Avg: ${avg.toFixed(1)}%${wkCodes(co) ? ' [' + wkCodes(co) + ']' : ''}`);
     });
 
     doc.moveDown();
