@@ -1300,9 +1300,13 @@ const AdminView={
         coHtml = '<tr><td colspan="4" class="td-load text-muted">No CO attainment data yet</td></tr>';
       } else {
         (d.coAttainments||[]).forEach(r => {
-          const att = r.level==='L3';
+          // `attained` is the stored threshold decision. level is a display band
+          // (L3 starts at 80), so reading L3 as "attained" marked a CO sitting
+          // at 60 percent, exactly on the policy threshold, as not attained.
+          const att = r.attained != null ? r.attained : r.level==='L3';
           coHtml += '<tr>' +
-            '<td><span class="badge bg-green">'+r.courseOutcome.code+'</span></td>' +
+            '<td><span class="badge bg-green">'+r.courseOutcome.code+'</span>' +
+              (r.courseOutcome.course?.code ? ' <span class="text-muted text-xs">'+esc(r.courseOutcome.course.code)+'</span>' : '') + '</td>' +
             '<td>'+r.courseOutcome.title+'</td>' +
             '<td style="text-align:center"><span class="badge '+(att?'bg-green':'bg-red')+'">'+(att?'Attained':'Not Attained')+'</span></td>' +
             '<td style="text-align:right;font-weight:700;color:'+(att?'var(--l3)':'var(--l0)')+'">'+r.percentage.toFixed(1)+'%</td>' +
@@ -1352,6 +1356,17 @@ const AdminView={
               ? '<p class="text-xs text-muted mt2">'+bd.unassessedCos+' mapped CO'+(bd.unassessedCos===1?'':'s')+' had no marks for this student, so '+(bd.unassessedCos===1?'it':'they')+' contributed nothing rather than counting as zero.</p>'
               : '';
 
+            // Per-course figures. The outcome is usually carried by more than
+            // one course, and seeing that one pulled it up while another pulled
+            // it down is the whole reason to open this row.
+            const pc = (bd.perCourse||[]).filter(c=>c.courseCode);
+            const perCourse = pc.length > 1
+              ? '<div class="mt2"><div class="text-xs fw7 mb1" style="color:var(--text3)">By course</div>' +
+                pc.map(c=>'<span class="badge '+(c.attained?'bg-green':'bg-red')+'" style="margin-right:5px">'+
+                  esc(c.courseCode)+' '+c.percentage.toFixed(1)+'%</span>').join('') +
+                '</div>'
+              : '';
+
             poHtml += '<tr id="'+rowId+'" style="display:none"><td colspan="5" style="padding:0;background:var(--surface2)">' +
               '<div style="padding:12px 20px">' +
                 '<div class="text-sm fw7 mb2" style="color:var(--text3)">How '+r.programOutcome.code+' was calculated</div>' +
@@ -1359,7 +1374,7 @@ const AdminView={
                   '<th style="padding:5px 8px;text-align:left">CO</th><th style="padding:5px 8px;text-align:left">Title</th>' +
                   '<th style="padding:5px 8px;text-align:center">Correlation</th><th style="padding:5px 8px;text-align:right">Score</th>' +
                   '<th style="padding:5px 8px;text-align:right">Share</th></tr></thead><tbody>'+rows+'</tbody></table>' +
-                note +
+                perCourse + note +
               '</div></td></tr>';
           }
         });
@@ -1380,7 +1395,8 @@ const AdminView={
         '<tbody>'+coHtml+'</tbody></table></div>';
       AdminView._lastStuReport = { student: stu, name, coAttainments: d.coAttainments||[], poAttainments: d.poAttainments||[] };
 
-      const attained = (d.poAttainments||[]).filter(r=>r.level==='L3').length;
+      // Count the stored decision, not the L3 display band.
+      const attained = (d.poAttainments||[]).filter(r=>r.attained != null ? r.attained : r.level==='L3').length;
       const total    = (d.poAttainments||[]).length;
       document.getElementById('modal-ft').innerHTML =
         '<span class="text-sm text-muted">PO attained: '+attained+'/'+total+'</span>' +
@@ -1395,9 +1411,9 @@ const AdminView={
     const rows=[
       ['Name', name],['ID', d.student.institutionalId||''],['',''],
       ['Type','Code','Title','Result','Score (%)'],
-      ...d.poAttainments.map(r=>['PO',r.programOutcome.code,r.programOutcome.title,r.level==='L3'?'Attained':'Not Attained',r.percentage.toFixed(1)]),
+      ...d.poAttainments.map(r=>['PO',r.programOutcome.code,r.programOutcome.title,(r.attained != null ? r.attained : r.level==='L3')?'Attained':'Not Attained',r.percentage.toFixed(1)]),
       ['','','','',''],
-      ...d.coAttainments.map(r=>['CO',r.courseOutcome.code,r.courseOutcome.title,r.level==='L3'?'Attained':'Not Attained',r.percentage.toFixed(1)]),
+      ...d.coAttainments.map(r=>['CO',r.courseOutcome.code,r.courseOutcome.title,(r.attained != null ? r.attained : r.level==='L3')?'Attained':'Not Attained',r.percentage.toFixed(1)]),
     ];
     const csv=rows.map(r=>r.map(v=>'"'+String(v||'').replace(/"/g,'""')+'"').join(',')).join('\n');
     const a=document.createElement('a');
@@ -1410,8 +1426,8 @@ const AdminView={
     const stu=d.student;
     const batch=stu.session?.name || (stu.institutionalId?'Batch 20'+stu.institutionalId.substring(0,2):'--');
     const win=window.open('','_blank');
-    const poRows=d.poAttainments.map(r=>{const att=r.level==='L3';return`<tr><td><b>${r.programOutcome.code}</b></td><td>${r.programOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
-    const coRows=d.coAttainments.map(r=>{const att=r.level==='L3';return`<tr><td><b>${r.courseOutcome.code}</b></td><td>${r.courseOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
+    const poRows=d.poAttainments.map(r=>{const att=r.attained != null ? r.attained : r.level==='L3';return`<tr><td><b>${r.programOutcome.code}</b></td><td>${r.programOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
+    const coRows=d.coAttainments.map(r=>{const att=r.attained != null ? r.attained : r.level==='L3';return`<tr><td><b>${r.courseOutcome.code}</b></td><td>${r.courseOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
     win.document.write(`<!DOCTYPE html><html><head><title>Attainment - ${name}</title><style>
       body{font-family:Arial,sans-serif;padding:30px;color:#222}
       h1{font-size:20px;margin-bottom:4px}h2{font-size:15px;color:#555;margin:20px 0 8px}

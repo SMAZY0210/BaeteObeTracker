@@ -1,6 +1,7 @@
 const bcrypt = require('bcrypt');
 const prisma = require('../prisma');
-const { getPolicyForProgram } = require('../services/policy.service');
+const { getPolicyForProgram, getPolicyForCourse } = require('../services/policy.service');
+const { computeStudentPoAttainment } = require('../utils/attainment');
 
 // ── Faculties ────────────────────────────────────────────────
 const getFaculties = async (req, res, next) => {
@@ -1040,82 +1041,21 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
     const coWhere = { studentId, ...(courseId && { courseId }) };
     const poWhere = { studentId, ...(courseId && { courseId }) };
 
-    // Which COs produced each PO figure.
-    //
-    // computeStudentPoAttainment already builds this breakdown and throws it
-    // away on the way to storing a single percentage. Rebuilding it here from
-    // the stored CO rows and the mapping matrix gives the same numbers without
-    // a schema change: each contributing CO, its percentage, the correlation
-    // strength, and the weight that strength carries (WEAK 1, MODERATE 2,
-    // STRONG 3). A student asking "why is my PO2 at 58%" gets an answer.
-    const buildPoBreakdown = async (poRows, coRows) => {
-      if (!poRows.length) return {};
-
-      const mappings = await prisma.coPoMapping.findMany({
-        where: {
-          programOutcomeId: { in: [...new Set(poRows.map((r) => r.programOutcomeId))] },
-          ...(courseId && { courseId }),
-        },
-        include: {
-          courseOutcome: { select: { id: true, code: true, title: true } },
-          course: { select: { id: true, code: true, name: true } },
-        },
-      });
-
-      const CORR_WEIGHT = { WEAK: 1, MODERATE: 2, STRONG: 3 };
-      const coById = Object.fromEntries(coRows.map((c) => [c.courseOutcomeId, c]));
-      const out = {};
-
-      for (const po of poRows) {
-        const rows = mappings
-          .filter((m) => m.programOutcomeId === po.programOutcomeId)
-          .map((m) => {
-            const co = coById[m.courseOutcomeId];
-            const weight = CORR_WEIGHT[m.correlation] ?? 1;
-            return {
-              courseOutcomeId: m.courseOutcomeId,
-              code: m.courseOutcome.code,
-              title: m.courseOutcome.title,
-              courseCode: m.course?.code ?? null,
-              correlation: m.correlation,
-              weight,
-              percentage: co ? co.percentage : null,
-              attained: co ? co.attained : null,
-              // How much of the PO figure this CO actually accounts for. Null
-              // percentage means the student has no marks for it, so it
-              // contributed nothing rather than contributing a zero.
-              contribution: co ? co.percentage * weight : null,
-            };
-          })
-          .sort((a, b) => (b.weight - a.weight) || a.code.localeCompare(b.code));
-
-        const counted = rows.filter((r) => r.percentage != null);
-        const weightTotal = counted.reduce((t, r) => t + r.weight, 0);
-
-        out[po.programOutcomeId] = {
-          contributors: rows.map((r) => ({
-            ...r,
-            sharePct: weightTotal && r.percentage != null
-              ? Math.round((r.weight / weightTotal) * 1000) / 10
-              : null,
-          })),
-          countedCos: counted.length,
-          unassessedCos: rows.length - counted.length,
-        };
-      }
-      return out;
-    };
-
-    const [coAttainments, poAttainments, enrolments] = await Promise.all([
+    const [coAttainments, poRows, enrolments] = await Promise.all([
       prisma.coAttainment.findMany({
         where: coWhere,
         include: {
-          courseOutcome: { select: { code: true, title: true } },
+          courseOutcome: {
+            select: { code: true, title: true, course: { select: { id: true, code: true } } },
+          },
         },
       }),
       prisma.poAttainment.findMany({
         where: poWhere,
-        include: { programOutcome: { select: { code: true, title: true } } },
+        include: {
+          programOutcome: { select: { id: true, code: true, title: true, description: true } },
+          // courseId is on the row itself; the course name comes from here
+        },
       }),
       prisma.enrolment.findMany({
         where: { studentId },
@@ -1123,27 +1063,120 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
       }),
     ]);
 
-    // Group by course
     const courseMap = {};
-    for (const e of enrolments) {
-      courseMap[e.course.id] = e.course;
-    }
+    for (const e of enrolments) courseMap[e.course.id] = e.course;
 
-    const poBreakdown = await buildPoBreakdown(poAttainments, coAttainments);
+    // ── Aggregate PO rows across courses ────────────────────────────
+    //
+    // PoAttainment is unique on (programOutcomeId, studentId, courseId), so a
+    // student taking two courses that both map to PO1 has two PO1 rows. Listing
+    // them raw showed PO1 twice with different figures and no way to tell which
+    // course each came from.
+    //
+    // The overall figure is recomputed through the same engine used everywhere
+    // else, across every CO mapped to the PO in any of the student's courses,
+    // rather than averaging the per-course percentages. Averaging would give a
+    // course with one weakly-correlated CO the same say as a course with four
+    // strongly-correlated ones.
+    const poIds = [...new Set(poRows.map((r) => r.programOutcomeId))];
+
+    const mappings = poIds.length
+      ? await prisma.coPoMapping.findMany({
+          where: { programOutcomeId: { in: poIds }, ...(courseId && { courseId }) },
+          include: {
+            courseOutcome: { select: { id: true, code: true, title: true } },
+            course: { select: { id: true, code: true, name: true } },
+          },
+        })
+      : [];
+
+    const policy = enrolments.length
+      ? await getPolicyForCourse(enrolments[0].courseId).catch(() => null)
+      : null;
+
+    const coResultsById = Object.fromEntries(coAttainments.map((c) => [c.courseOutcomeId, c]));
+    const CORR_WEIGHT = { WEAK: 1, MODERATE: 2, STRONG: 3 };
+
+    const poAttainments = poIds.map((programOutcomeId) => {
+      const rowsForPo = poRows.filter((r) => r.programOutcomeId === programOutcomeId);
+      const meta = rowsForPo[0].programOutcome;
+
+      const overall = computeStudentPoAttainment({
+        studentId,
+        programOutcomeId,
+        mappings,
+        coResultsById,
+        policy,
+      });
+
+      // Contributing COs, with the course each belongs to, so the dropdown
+      // explains where the number came from.
+      const contributors = mappings
+        .filter((m) => m.programOutcomeId === programOutcomeId)
+        .map((m) => {
+          const co = coResultsById[m.courseOutcomeId];
+          const weight = CORR_WEIGHT[m.correlation] ?? 1;
+          return {
+            courseOutcomeId: m.courseOutcomeId,
+            code: m.courseOutcome.code,
+            title: m.courseOutcome.title,
+            courseCode: m.course?.code ?? null,
+            correlation: m.correlation,
+            weight,
+            percentage: co ? co.percentage : null,
+            attained: co ? co.attained : null,
+          };
+        })
+        .sort((a, b) => (a.courseCode || '').localeCompare(b.courseCode || '') || a.code.localeCompare(b.code));
+
+      const counted = contributors.filter((c) => c.percentage != null);
+      const weightTotal = counted.reduce((t, c) => t + c.weight, 0);
+
+      return {
+        programOutcomeId,
+        programOutcome: meta,
+        percentage: overall ? overall.percentage : null,
+        attained: overall ? overall.attained : false,
+        level: overall ? overall.level : 'L0',
+        policyVersion: rowsForPo[0].policyVersion,
+        breakdown: {
+          contributors: contributors.map((c) => ({
+            ...c,
+            sharePct: weightTotal && c.percentage != null
+              ? Math.round((c.weight / weightTotal) * 1000) / 10
+              : null,
+          })),
+          countedCos: counted.length,
+          unassessedCos: contributors.length - counted.length,
+          // The stored per-course figures, kept so the dropdown can show that
+          // one course pulled the outcome up and another pulled it down.
+          perCourse: rowsForPo.map((r) => ({
+            courseId: r.courseId,
+            courseCode: r.courseId ? (courseMap[r.courseId]?.code ?? null) : null,
+            percentage: r.percentage,
+            attained: r.attained,
+          })).sort((a, b) => (a.courseCode || '').localeCompare(b.courseCode || '')),
+        },
+      };
+    });
+
+    // PO1..PO12 numerically. A plain code sort puts PO10 between PO1 and PO2.
+    const numSort = (a, b) => {
+      const nA = parseInt(String(a).replace(/\D+/g, ''), 10);
+      const nB = parseInt(String(b).replace(/\D+/g, ''), 10);
+      return isNaN(nA) || isNaN(nB) ? String(a).localeCompare(String(b)) : nA - nB;
+    };
+    poAttainments.sort((a, b) => numSort(a.programOutcome.code, b.programOutcome.code));
+
+    coAttainments.sort(
+      (a, b) =>
+        (a.courseOutcome.course?.code || '').localeCompare(b.courseOutcome.course?.code || '') ||
+        numSort(a.courseOutcome.code, b.courseOutcome.code)
+    );
 
     res.json({
       status: 'success',
-      data: {
-        student,
-        coAttainments,
-        // Each PO carries the COs that produced its figure, so the UI can hang a
-        // dropdown off the row without another round trip.
-        poAttainments: poAttainments.map((po) => ({
-          ...po,
-          breakdown: poBreakdown[po.programOutcomeId] ?? { contributors: [], countedCos: 0, unassessedCos: 0 },
-        })),
-        courses: Object.values(courseMap),
-      },
+      data: { student, coAttainments, poAttainments, courses: Object.values(courseMap) },
     });
   } catch (err) { next(err); }
 };
