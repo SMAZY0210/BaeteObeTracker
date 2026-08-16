@@ -6,6 +6,8 @@ router.use(authenticate, authorize('ADMIN', 'FACULTY'));
 
 router.get('/courses', c.getMyCourses);
 
+// v3.0 attribute vocabulary for the CO editor (WK, WP, EA)
+router.get('/outcome-attributes', c.getOutcomeAttributes);
 router.get('/courses/:courseId/outcomes', c.getCourseOutcomes);
 router.post('/courses/:courseId/outcomes', c.createCourseOutcome);
 router.put('/courses/:courseId/outcomes/:id', c.updateCourseOutcome);

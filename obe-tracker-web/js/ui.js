@@ -119,25 +119,82 @@ function renderProfileChips(profiles){
   }).join(' ');
 }
 
-// Render multi-profile selector for modals
-function profileSelectorHTML(current=[]){
-  const curMap={};
-  current.forEach(p=>{curMap[p.type]=p.code||''});
-  return`<div class="profile-selector" id="profile-sel">
-    ${PROFILE_TYPES.map(t=>`
-      <div class="profile-option ${curMap[t.key]!==undefined?'selected':''}" onclick="toggleProfile(this,'${t.key}')">
-        <input type="checkbox" class="pro-chk" data-ptype="${t.key}" value="${t.key}" ${curMap[t.key]!==undefined?'checked':''} style="width:auto" onclick="event.stopPropagation()">
-        <div>
-          <div class="profile-option-label">${t.label}</div>
-          <div class="profile-option-sub">${t.sub}</div>
-          <div class="po-code-input ${curMap[t.key]!==undefined?'':'hidden'}">
-            <input type="text" class="pro-code" data-ptype="${t.key}" placeholder="${t.letter} code e.g. ${t.letter}1" value="${curMap[t.key]||''}">
-          </div>
-        </div>
-      </div>`).join('')}
+// ── BAETE v3.0 attribute selector ───────────────────────────────────
+//
+// Replaces the FUNDAMENTAL / SOCIAL / THINKING / PERSONAL selector, which was
+// not BAETE's taxonomy and wrote to columns that no longer exist.
+//
+// Three groups, from ACC-MAN-02 v3.0 s.5.3(vi):
+//   WK1-WK9  Knowledge Profile           Table 6.1
+//   WP1-WP7  Complex Engineering Problem Table 6.2
+//   EA1-EA5  Complex Engineering Activities  Table 6.3
+//
+// Two columns per group. Each card carries a checkbox and expands on click to
+// show the full attribute text, because nobody can pick between "WP4 Familiarity
+// of issues" and "WP5 Extent of applicable codes" from the label alone, and the
+// wording is what an evaluator will hold the mapping against.
+let ATTR_CACHE = null;
+
+async function loadOutcomeAttributes(){
+  if (ATTR_CACHE) return ATTR_CACHE;
+  try { ATTR_CACHE = await Api.getOutcomeAttributes(); }
+  catch(e){ ATTR_CACHE = { knowledgeProfile: [], complexProblem: [], complexActivity: [] }; }
+  return ATTR_CACHE;
+}
+
+function attrCard(item, checked, cls){
+  const label = item.shortName || item.dimension || '';
+  const id = 'ad-' + item.code;
+  return `<div class="attr-card" data-code="${item.code}" style="border:1.5px solid ${checked?'var(--green)':'var(--border)'};border-radius:7px;overflow:hidden">
+    <div style="display:flex;align-items:flex-start;gap:9px;padding:9px 11px">
+      <input type="checkbox" class="${cls}" value="${item.code}" ${checked?'checked':''}
+        style="width:auto;margin-top:2px;accent-color:var(--green);flex:none"
+        onchange="this.closest('.attr-card').style.borderColor=this.checked?'var(--green)':'var(--border)'">
+      <div style="flex:1;min-width:0;cursor:pointer" onclick="toggleAttrDetail('${id}')">
+        <div style="font-size:12.5px"><b>${item.code}</b>${item.isMandatory?' <span class="badge bg-red" style="font-size:9.5px">required</span>':''}</div>
+        <div class="text-muted" style="font-size:11.5px;line-height:1.4;margin-top:1px">${esc(label)}</div>
+      </div>
+      <span onclick="toggleAttrDetail('${id}')" style="cursor:pointer;color:var(--text4);font-size:11px;flex:none;padding:2px 4px" title="Show full wording">&#9660;</span>
+    </div>
+    <div id="${id}" style="display:none;padding:0 11px 10px 11px">
+      <div style="font-size:11.5px;line-height:1.55;color:var(--text3);border-top:1px solid var(--border);padding-top:8px">${esc(item.attribute||'')}</div>
+    </div>
   </div>`;
 }
 
+function toggleAttrDetail(id){
+  const el = document.getElementById(id);
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+function attrGroupHTML(title, note, items, cls, selected){
+  if(!items || !items.length) return '';
+  const on = new Set(selected||[]);
+  return `<div class="mb3">
+    <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">
+      <span style="font-size:12.5px;font-weight:700">${title}</span>
+      <span class="text-muted" style="font-size:11px">${note}</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+      ${items.map(i=>attrCard(i, on.has(i.code), cls)).join('')}
+    </div>
+  </div>`;
+}
+
+/** Whole selector: WK plus WP plus EA. */
+function outcomeAttrSelectorHTML(attrs, selectedWk=[], selectedCa=[]){
+  if(!attrs || !attrs.knowledgeProfile || !attrs.knowledgeProfile.length){
+    return '<div class="alert alert-warn" style="margin:0"><span class="alert-icon">!</span>Attribute vocabulary not loaded. Run prisma/seed-framework.js.</div>';
+  }
+  return attrGroupHTML('Knowledge Profile', 'WK1 to WK9, Table 6.1', attrs.knowledgeProfile, 'wk-chk', selectedWk)
+       + attrGroupHTML('Complex Engineering Problem', 'WP1 to WP7, Table 6.2. WP1 applies wherever any other WP does.', attrs.complexProblem, 'ca-chk', selectedCa)
+       + attrGroupHTML('Complex Engineering Activities', 'EA1 to EA5, Table 6.3', attrs.complexActivity, 'ca-chk', selectedCa);
+}
+
+function selectedWkCodes(){ return [...document.querySelectorAll('.wk-chk:checked')].map(c=>c.value); }
+function selectedCaCodes(){ return [...document.querySelectorAll('.ca-chk:checked')].map(c=>c.value); }
+
+// Unused since the v3 attribute selector replaced the profile selector.
 function toggleProfile(card,type){
   const cb=card.querySelector('.pro-chk');
   const codeWrap=card.querySelector('.po-code-input');

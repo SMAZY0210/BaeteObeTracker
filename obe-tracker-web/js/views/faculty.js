@@ -84,12 +84,11 @@ const FacultyView = {
     el.innerHTML = `<div class="flex-between mb3"><span class="sec-title">Course Outcomes</span>
       <button class="btn btn-primary btn-sm" onclick="FacultyView._addCO()">${ico('plus')} Add CO</button></div>
       <div class="tbl-wrap"><table><thead><tr>
-        <th>Code</th><th>Title</th><th>Bloom's</th><th>Profiles</th><th>Maps to POs</th><th class="td-r">Actions</th>
+        <th>Code</th><th>Title</th><th>Bloom's</th><th>WK / WP / EA</th><th>Maps to POs</th><th class="td-r">Actions</th>
       </tr></thead><tbody id="co-tb">${tdLoad(6)}</tbody></table></div>`;
     try {
       const list = await Api.getCourseOutcomes(this._cid);
       document.getElementById('co-tb').innerHTML = list.length ? list.map(co => {
-        const profiles = parseProfiles(co);
         const poLinks = (co.mappings||[])
           .filter(m => m.correlation)  // only show POs with an active mapping
           .map(m => `<span class="badge bg-blue" title="${m.programOutcome.title}">${m.programOutcome.code}</span>`)
@@ -98,10 +97,15 @@ const FacultyView = {
           <td><span class="badge bg-green">${co.code}</span></td>
           <td><div class="fw7">${co.title}</div>${co.description?`<div class="text-sm text-muted">${co.description}</div>`:''}</td>
           <td>${co.bloomDomain?`<span class="badge bg-gray">${co.bloomDomain.charAt(0)}${co.bloomLevel||''}</span>`:'-'}</td>
-          <td><div class="profile-chips">${renderProfileChips(profiles)}</div></td>
+          <td>${(()=>{
+            const wk=(co.knowledgeProfiles||[]).map(k=>`<span class="badge bg-blue" title="${esc(k.knowledgeProfile.attribute||'')}">${k.knowledgeProfile.code}</span>`);
+            const ca=(co.complexAttributes||[]).map(k=>`<span class="badge ${k.complexAttribute.kind==='PROBLEM'?'bg-amber':'bg-dark'}" title="${esc(k.complexAttribute.attribute||'')}">${k.complexAttribute.code}</span>`);
+            const all=[...wk,...ca];
+            return all.length ? all.join(' ') : '<span class="text-muted text-sm">unmapped</span>';
+          })()}</td>
           <td>${poLinks}</td>
           <td class="td-r" style="white-space:nowrap;vertical-align:middle">
-            <button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="FacultyView._editCO('${co.id}','${co.code}','${co.title.replace(/'/g,"&#39;")}','${(co.description||'').replace(/'/g,"&#39;")}','${co.bloomDomain||''}',${co.bloomLevel||'null'},'${co.profileCode||''}')">${ico('edit',13)} Edit</button>
+            <button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="FacultyView._editCO('${co.id}','${co.code}','${co.title.replace(/'/g,"&#39;")}','${(co.description||'').replace(/'/g,"&#39;")}','${co.bloomDomain||''}',${co.bloomLevel||'null'},'${(co.knowledgeProfiles||[]).map(k=>k.knowledgeProfile.code).join(',')}','${(co.complexAttributes||[]).map(k=>k.complexAttribute.code).join(',')}')">${ico('edit',13)} Edit</button>
             <button class="icon-btn danger" style="vertical-align:middle" onclick="FacultyView._delCO('${co.id}','${co.code}')">${ico('trash',13)}</button>
           </td>
         </tr>`;
@@ -110,6 +114,7 @@ const FacultyView = {
   },
 
   async _addCO() {
+    const attrs = await loadOutcomeAttributes();
     // Fetch POs for this course's program
     const { programOutcomes: pos } = await Api.getMapping(this._cid);
 
@@ -147,8 +152,9 @@ const FacultyView = {
       </div>
 
       <div class="fg mb3">
-        <label>Graduate Profiles <span class="text-muted">(select all that apply)</span></label>
-        ${profileSelectorHTML()}
+        <label>BAETE Attributes <span class="text-muted">(click a card to read the full wording)</span></label>
+        <p class="text-sm text-muted mb2">s.5.3(vi): the curriculum must map how each WK attribute is addressed, and show how WP and EA are incorporated into teaching, learning and assessment.</p>
+        ${outcomeAttrSelectorHTML(attrs)}
       </div>
 
       <div class="divider"></div>
@@ -188,15 +194,14 @@ const FacultyView = {
   },
 
   async _saveCO() {
-    const profiles = collectProfiles();
     const d = {
       code: document.getElementById('mco-code').value.trim(),
       title: document.getElementById('mco-title').value.trim(),
       description: document.getElementById('mco-desc').value.trim() || null,
       bloomDomain: document.getElementById('mco-bloom').value || null,
       bloomLevel: parseInt(document.getElementById('mco-blvl').value) || null,
-      profileType: profiles.length ? profiles[0].type : null,
-      profileCode: profiles.length ? JSON.stringify(profiles) : null,
+      knowledgeProfileCodes: selectedWkCodes(),
+      complexAttributeCodes: selectedCaCodes(),
     };
     if (!d.code || !d.title) return toast('Code and title required', 'err');
     try {
@@ -233,7 +238,12 @@ const FacultyView = {
     catch(e) { toast(e.message, 'err'); }
   },
 
-  async _editCO(coId, code, title, description, bloomDomain, bloomLevel, profileCodeRaw) {
+  // wkRaw and caRaw are comma-separated code lists already on this outcome,
+  // passed through the onclick attribute rather than refetched.
+  async _editCO(coId, code, title, description, bloomDomain, bloomLevel, wkRaw, caRaw) {
+    const attrs = await loadOutcomeAttributes();
+    const currentWk = (wkRaw || '').split(',').filter(Boolean);
+    const currentCa = (caRaw || '').split(',').filter(Boolean);
     const bloomLevels = {
       COGNITIVE:   ['1 - Remember','2 - Understand','3 - Apply','4 - Analyse','5 - Evaluate','6 - Create'],
       AFFECTIVE:   ['1 - Receiving','2 - Responding','3 - Valuing','4 - Organising','5 - Characterising'],
@@ -268,8 +278,8 @@ const FacultyView = {
         </div>
       </div>
       <div class="fg mb3">
-        <label>Graduate Profiles <span class="text-muted">(select all that apply)</span></label>
-        ${(()=>{ try{ return profileSelectorHTML(profileCodeRaw ? JSON.parse(decodeURIComponent(profileCodeRaw)) : []); }catch(e){ return profileSelectorHTML([]); } })()}
+        <label>BAETE Attributes <span class="text-muted">(click a card to read the full wording)</span></label>
+        ${outcomeAttrSelectorHTML(attrs, currentWk, currentCa)}
       </div>`,
       `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
        <button class="btn btn-primary" onclick="FacultyView._saveEditCO('${coId}')">${ico('save')} Save CO</button>`, true);
@@ -285,15 +295,14 @@ const FacultyView = {
   },
 
   async _saveEditCO(coId) {
-    const profiles = collectProfiles();
     const d = {
       code:        document.getElementById('eco-code').value.trim(),
       title:       document.getElementById('eco-title').value.trim(),
       description: document.getElementById('eco-desc').value.trim() || null,
       bloomDomain: document.getElementById('eco-bloom').value || null,
       bloomLevel:  parseInt(document.getElementById('eco-blvl').value) || null,
-      profileType: profiles.length ? profiles[0].type : null,
-      profileCode: profiles.length ? JSON.stringify(profiles) : null,
+      knowledgeProfileCodes: selectedWkCodes(),
+      complexAttributeCodes: selectedCaCodes(),
     };
     if (!d.code || !d.title) return toast('Code and title required', 'err');
     try {

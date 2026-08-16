@@ -52,8 +52,8 @@ async function main() {
   for (const wk of KNOWLEDGE_PROFILE) {
     const row = await prisma.knowledgeProfile.upsert({
       where: { frameworkId_code: { frameworkId: framework.id, code: wk.code } },
-      update: { attribute: wk.attribute },
-      create: { frameworkId: framework.id, code: wk.code, attribute: wk.attribute },
+      update: { attribute: wk.attribute, shortName: wk.shortName ?? null },
+      create: { frameworkId: framework.id, code: wk.code, shortName: wk.shortName ?? null, attribute: wk.attribute },
     });
     wkByCode[wk.code] = row.id;
   }

@@ -110,46 +110,55 @@ const PROGRAM_OUTCOMES = [
 const KNOWLEDGE_PROFILE = [
   {
     code: 'WK1',
+    shortName: 'Natural Sciences',
     attribute:
       'A systematic, theory-based understanding of the natural sciences applicable to the discipline and awareness of relevant social sciences',
   },
   {
     code: 'WK2',
+    shortName: 'Mathematics & Computing',
     attribute:
       'Conceptually based mathematics, numerical analysis, data analysis, statistics and the formal aspects of computer and information science to support detailed analysis and modeling applicable to the discipline',
   },
   {
     code: 'WK3',
+    shortName: 'Engineering Fundamentals',
     attribute:
       'A systematic, theory-based formulation of engineering fundamentals required in the engineering discipline',
   },
   {
     code: 'WK4',
+    shortName: 'Specialist Knowledge',
     attribute:
       'Engineering specialist knowledge that provides theoretical frameworks and bodies of knowledge for the accepted practice areas in the engineering discipline; much is at the forefront of the discipline',
   },
   {
     code: 'WK5',
+    shortName: 'Engineering Design',
     attribute:
       'Knowledge, including efficient resource use, environmental impacts, whole-life cost, re-use of resources, net zero carbon, and similar concepts, that supports engineering design and operations in a practice area',
   },
   {
     code: 'WK6',
+    shortName: 'Engineering Practice',
     attribute:
       'Knowledge of engineering practice (technology) in the practice areas in the engineering discipline',
   },
   {
     code: 'WK7',
+    shortName: 'Comprehension',
     attribute:
       'Knowledge of the role of engineering in society and identified issues in engineering practice in the discipline, such as professional responsibility of an engineer to public safety and sustainable development',
   },
   {
     code: 'WK8',
+    shortName: 'Research Literature & Critical Thinking',
     attribute:
       'Engagement with selected knowledge in the current research literature of the discipline, awareness of the power of critical thinking and creative approaches to evaluate emerging issues',
   },
   {
     code: 'WK9',
+    shortName: 'Professional Ethics & Conduct',
     attribute:
       'Ethics, inclusive behavior and conduct. Knowledge of professional ethics, responsibilities, and norms of engineering practice. Awareness of the need for diversity by reason of ethnicity, gender, age, physical ability etc. with mutual understanding and respect, and of inclusive attitudes',
   },

@@ -175,6 +175,7 @@ model KnowledgeProfile {
   id          String @id @default(cuid())
   frameworkId String
   code        String // WK1..WK9  (v2.x used K1..K8 — not interchangeable)
+  shortName   String? // "Natural Sciences", "Specialist knowledge", ...
   attribute   String @db.Text
 
   framework AccreditationFramework @relation(fields: [frameworkId], references: [id], onDelete: Cascade)
@@ -204,8 +205,9 @@ model ComplexAttribute {
   isMandatory Boolean         @default(false) // WP1 only
 
   framework       AccreditationFramework  @relation(fields: [frameworkId], references: [id], onDelete: Cascade)
-  assessmentLinks AssessmentComplexAttr[]
-  courseLinks     CourseComplexAttr[]
+  assessmentLinks    AssessmentComplexAttr[]
+  courseLinks        CourseComplexAttr[]
+  courseOutcomeLinks CourseOutcomeComplexAttr[]
 
   @@unique([frameworkId, code])
 }
@@ -671,13 +673,32 @@ model CourseOutcome {
   marks              Mark[]
   coAttainments      CoAttainment[]
   courseCoAttainments CourseCoAttainment[]
-  knowledgeProfiles  CourseOutcomeWk[] // [NEW] s.5.3.6 WK mapping
+  knowledgeProfiles  CourseOutcomeWk[] // s.5.3(vi) WK mapping
+  complexAttributes  CourseOutcomeComplexAttr[] // s.5.3(vi) WP and EA
   cqiActions         CqiAction[]
 
   @@unique([courseId, code])
 }
 
 // [NEW] s.5.3.6 — each WK attribute must be demonstrably addressed in the curriculum
+// WP and EA at course-outcome level.
+//
+// ACC-MAN-02 v3.0 s.5.3(vi) asks the programme to show how WP1-WP7 and EA1-EA5
+// are incorporated into teaching, LEARNING and assessment. Assessment-level
+// tagging already exists and answers "which coursework carries WP3". This table
+// answers the other half: which learning outcome incorporates it at all. Both
+// are wanted, and an evaluator asks the second before the first.
+model CourseOutcomeComplexAttr {
+  courseOutcomeId    String
+  complexAttributeId String
+  justification      String? @db.Text
+
+  courseOutcome    CourseOutcome    @relation(fields: [courseOutcomeId], references: [id], onDelete: Cascade)
+  complexAttribute ComplexAttribute @relation(fields: [complexAttributeId], references: [id], onDelete: Cascade)
+
+  @@id([courseOutcomeId, complexAttributeId])
+}
+
 model CourseOutcomeWk {
   courseOutcomeId    String
   knowledgeProfileId String

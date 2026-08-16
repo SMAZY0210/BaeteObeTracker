@@ -31,6 +31,7 @@ const getCourseOutcomes = async (req, res, next) => {
     await assertFacultyOwns(req.user, courseId);
     const items = await prisma.courseOutcome.findMany({
       where: { courseId, deletedAt: null },
+      include: CO_INCLUDE,
       include: {
         mappings: {
           include: { programOutcome: { select: { id: true, code: true, title: true } } },
@@ -42,42 +43,203 @@ const getCourseOutcomes = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/**
+ * Resolve WK / WP / EA codes to ids on the active framework.
+ *
+ * Replaces profileType and profileCode, which held a FUNDAMENTAL / SOCIAL /
+ * THINKING / PERSONAL taxonomy. That is not BAETE's, and the columns were
+ * dropped from the schema while these handlers kept writing to them, so
+ * creating any course outcome failed outright.
+ *
+ * ACC-MAN-02 v3.0 s.5.3(vi) is what replaces it: the curriculum must map how
+ * each WK1-WK9 attribute is addressed, and show how WP1-WP7 and EA1-EA5 are
+ * incorporated into teaching, learning and assessment.
+ */
+async function activeFramework() {
+  const fw = await prisma.accreditationFramework.findFirst({
+    where: { isActive: true },
+    select: { id: true },
+  });
+  if (!fw) {
+    const e = new Error('No accreditation framework seeded. Run prisma/seed-framework.js');
+    e.status = 400;
+    throw e;
+  }
+  return fw;
+}
+
+async function resolveWkIds(codes) {
+  if (!Array.isArray(codes) || !codes.length) return [];
+  const fw = await activeFramework();
+  const rows = await prisma.knowledgeProfile.findMany({
+    where: { frameworkId: fw.id, code: { in: codes } },
+    select: { id: true, code: true },
+  });
+  const missing = codes.filter((c) => !rows.some((r) => r.code === c));
+  if (missing.length) {
+    const e = new Error(`Unknown knowledge profile code(s): ${missing.join(', ')}`);
+    e.status = 400;
+    throw e;
+  }
+  return rows.map((r) => r.id);
+}
+
+async function resolveComplexIds(codes) {
+  if (!Array.isArray(codes) || !codes.length) return [];
+  const fw = await activeFramework();
+  const rows = await prisma.complexAttribute.findMany({
+    where: { frameworkId: fw.id, code: { in: codes } },
+    select: { id: true, code: true, kind: true },
+  });
+  const missing = codes.filter((c) => !rows.some((r) => r.code === c));
+  if (missing.length) {
+    const e = new Error(`Unknown complex attribute code(s): ${missing.join(', ')}`);
+    e.status = 400;
+    throw e;
+  }
+  return rows.map((r) => r.id);
+}
+
+/**
+ * WP1 is not optional. Table 6.2 states a complex engineering problem has WP1
+ * and some or all of WP2 to WP7, so a CO claiming WP3 without WP1 is claiming
+ * something the manual does not recognise. Warned rather than refused, because
+ * the judgement is the course teacher's and a hard block would push people into
+ * ticking WP1 without meaning it.
+ */
+function wp1Warning(codes) {
+  const wps = (codes || []).filter((c) => /^WP[2-7]$/.test(c));
+  if (wps.length && !(codes || []).includes('WP1')) {
+    return `This outcome claims ${wps.join(', ')} without WP1. Table 6.2 defines a complex engineering problem as WP1 plus some or all of WP2 to WP7, so WP1 is expected wherever any other WP applies.`;
+  }
+  return null;
+}
+
+const CO_INCLUDE = {
+  knowledgeProfiles: { include: { knowledgeProfile: { select: { code: true, shortName: true, attribute: true } } } },
+  complexAttributes: { include: { complexAttribute: { select: { code: true, kind: true, dimension: true, attribute: true } } } },
+};
+
 const createCourseOutcome = async (req, res, next) => {
   try {
     const { courseId } = req.params;
     await assertFacultyOwns(req.user, courseId);
-    const { code, title, description, bloomDomain, bloomLevel, profileType, profileCode } = req.body;
-    // Check for duplicate code in this course
-    const existing = await prisma.courseOutcome.findFirst({
-      where: { courseId, code, deletedAt: null },
-    });
+    const {
+      code, title, description, bloomDomain, bloomLevel,
+      knowledgeProfileCodes, complexAttributeCodes,
+    } = req.body;
+
+    const existing = await prisma.courseOutcome.findFirst({ where: { courseId, code, deletedAt: null } });
     if (existing) {
       return res.status(409).json({ status: 'error', error: `CO code "${code}" already exists in this course.` });
     }
+
+    const [wkIds, caIds] = await Promise.all([
+      resolveWkIds(knowledgeProfileCodes),
+      resolveComplexIds(complexAttributeCodes),
+    ]);
+
     const item = await prisma.courseOutcome.create({
-      data: { courseId, code, title, description, bloomDomain, bloomLevel, profileType, profileCode },
+      data: {
+        courseId, code, title, description, bloomDomain, bloomLevel,
+        knowledgeProfiles: { create: wkIds.map((id) => ({ knowledgeProfileId: id })) },
+        complexAttributes: { create: caIds.map((id) => ({ complexAttributeId: id })) },
+      },
+      include: CO_INCLUDE,
     });
-    res.status(201).json({ status: 'success', data: item });
-  } catch (err) { next(err); }
+
+    res.status(201).json({ status: 'success', data: item, warning: wp1Warning(complexAttributeCodes) });
+  } catch (err) {
+    if (err.status === 400) return res.status(400).json({ status: 'error', error: err.message });
+    next(err);
+  }
 };
 
 const updateCourseOutcome = async (req, res, next) => {
   try {
     const { courseId, id } = req.params;
     await assertFacultyOwns(req.user, courseId);
-    const { code, title, description, bloomDomain, bloomLevel, profileType, profileCode } = req.body;
-    // Check for duplicate code (excluding this CO)
+    const {
+      code, title, description, bloomDomain, bloomLevel,
+      knowledgeProfileCodes, complexAttributeCodes,
+    } = req.body;
+
     const existing = await prisma.courseOutcome.findFirst({
       where: { courseId, code, deletedAt: null, NOT: { id } },
     });
     if (existing) {
       return res.status(409).json({ status: 'error', error: `CO code "${code}" already exists in this course.` });
     }
-    const item = await prisma.courseOutcome.update({
-      where: { id },
-      data: { code, title, description, bloomDomain, bloomLevel, profileType, profileCode },
+
+    // Only touch a link set when the caller actually sent it, so a partial
+    // update that omits the field does not silently wipe the mapping.
+    const touchWk = knowledgeProfileCodes !== undefined;
+    const touchCa = complexAttributeCodes !== undefined;
+    const [wkIds, caIds] = await Promise.all([
+      touchWk ? resolveWkIds(knowledgeProfileCodes) : [],
+      touchCa ? resolveComplexIds(complexAttributeCodes) : [],
+    ]);
+
+    const item = await prisma.$transaction(async (tx) => {
+      if (touchWk) {
+        await tx.courseOutcomeWk.deleteMany({ where: { courseOutcomeId: id } });
+        if (wkIds.length) {
+          await tx.courseOutcomeWk.createMany({
+            data: wkIds.map((wid) => ({ courseOutcomeId: id, knowledgeProfileId: wid })),
+          });
+        }
+      }
+      if (touchCa) {
+        await tx.courseOutcomeComplexAttr.deleteMany({ where: { courseOutcomeId: id } });
+        if (caIds.length) {
+          await tx.courseOutcomeComplexAttr.createMany({
+            data: caIds.map((cid) => ({ courseOutcomeId: id, complexAttributeId: cid })),
+          });
+        }
+      }
+      return tx.courseOutcome.update({
+        where: { id },
+        data: { code, title, description, bloomDomain, bloomLevel },
+        include: CO_INCLUDE,
+      });
     });
-    res.json({ status: 'success', data: item });
+
+    res.json({ status: 'success', data: item, warning: touchCa ? wp1Warning(complexAttributeCodes) : null });
+  } catch (err) {
+    if (err.status === 400) return res.status(400).json({ status: 'error', error: err.message });
+    next(err);
+  }
+};
+
+/**
+ * The full v3.0 attribute vocabulary for the CO editor: WK1-WK9 from Table 6.1,
+ * WP1-WP7 from Table 6.2, EA1-EA5 from Table 6.3. Served from the framework
+ * rather than hardcoded in the frontend, so a future manual revision does not
+ * need a UI change.
+ */
+const getOutcomeAttributes = async (req, res, next) => {
+  try {
+    const fw = await prisma.accreditationFramework.findFirst({
+      where: { isActive: true },
+      include: {
+        knowledgeProfiles: { orderBy: { code: 'asc' } },
+        complexAttributes: { orderBy: { code: 'asc' } },
+      },
+    });
+    if (!fw) return res.status(404).json({ status: 'error', error: 'No accreditation framework seeded' });
+
+    const byCode = (a, b) =>
+      a.code.replace(/\d+/, '').localeCompare(b.code.replace(/\d+/, '')) ||
+      parseInt(a.code.replace(/\D+/, ''), 10) - parseInt(b.code.replace(/\D+/, ''), 10);
+
+    res.json({
+      status: 'success',
+      data: {
+        knowledgeProfile: fw.knowledgeProfiles.sort(byCode),
+        complexProblem: fw.complexAttributes.filter((c) => c.kind === 'PROBLEM').sort(byCode),
+        complexActivity: fw.complexAttributes.filter((c) => c.kind === 'ACTIVITY').sort(byCode),
+      },
+    });
   } catch (err) { next(err); }
 };
 
@@ -723,7 +885,8 @@ const updateAssessmentAttainmentMark = async (req, res, next) => {
 
 module.exports = {
   getMyCourses,
-  getCourseOutcomes, createCourseOutcome, updateCourseOutcome, deleteCourseOutcome,
+  getCourseOutcomes,
+  getOutcomeAttributes, createCourseOutcome, updateCourseOutcome, deleteCourseOutcome,
   getMapping, saveMapping,
   getAssessments, createAssessment, updateAssessment, deleteAssessment,
   getMarks, saveMarks,

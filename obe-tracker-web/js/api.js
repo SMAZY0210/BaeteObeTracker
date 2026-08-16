@@ -91,6 +91,7 @@ const Api = {
 
   // Faculty
   getMyCourses()                      { return this.get('/faculty/courses'); },
+  getOutcomeAttributes()              { return this.get('/faculty/outcome-attributes'); },
   getCourseOutcomes(courseId)         { return this.get('/faculty/courses/' + courseId + '/outcomes'); },
   createCO(courseId, d)               { return this.post('/faculty/courses/' + courseId + '/outcomes', d); },
   deleteCO(courseId, coId)            { return this.delete('/faculty/courses/' + courseId + '/outcomes/' + coId); },
