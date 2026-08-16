@@ -1280,6 +1280,11 @@ const AdminView={
     }
   },
 
+  // Percentages arrive null for outcomes with no evidence behind them. Every
+  // display path goes through here so one unguarded .toFixed() cannot take the
+  // whole report down again.
+  _pct(v, dash='--'){ return (v == null || isNaN(v)) ? dash : (+v).toFixed(1) + '%'; },
+
   async _viewStuAtt(studentId, name){
     showModal('Attainment Report - ' + name, loading(), '', true);
     try{
@@ -1321,7 +1326,7 @@ const AdminView={
             : '<span class="badge '+(att?'bg-green':'bg-red')+'">'+(att?'Attained':'Not Attained')+'</span>';
           const score = !assessed
             ? '<span class="text-muted">--</span>'
-            : '<span style="font-weight:700;color:'+(att?'var(--l3)':'var(--l0)')+'">'+r.percentage.toFixed(1)+'%</span>';
+            : '<span style="font-weight:700;color:'+(att?'var(--l3)':'var(--l0)')+'">'+AdminView._pct(r.percentage)+'</span>';
 
           poHtml += '<tr'+(assessed?'':' style="opacity:.62"')+'>' +
             '<td><span class="badge bg-blue">'+r.programOutcome.code+'</span></td>' +
@@ -1343,7 +1348,7 @@ const AdminView={
                 '<td style="padding:5px 8px">'+esc(c.title)+'</td>' +
                 '<td style="padding:5px 8px;text-align:center"><span class="badge '+corrBadge+'">'+c.correlation.toLowerCase()+' &times;'+c.weight+'</span></td>' +
                 '<td style="padding:5px 8px;text-align:right;font-weight:700;color:'+(has?(c.attained?'var(--l3)':'var(--l0)'):'var(--text4)')+'">' +
-                  (has ? c.percentage.toFixed(1)+'%' : 'not assessed') + '</td>' +
+                  (has ? AdminView._pct(c.percentage) : 'not assessed') + '</td>' +
                 '<td style="padding:5px 8px;text-align:right;color:var(--text3)">'+(c.sharePct!=null ? c.sharePct+'% of PO' : '--')+'</td>' +
                 '</tr>';
             }).join('');
@@ -1359,7 +1364,7 @@ const AdminView={
             const perCourse = pc.length > 1
               ? '<div class="mt2"><div class="text-xs fw7 mb1" style="color:var(--text3)">By course</div>' +
                 pc.map(c=>'<span class="badge '+(c.attained?'bg-green':'bg-red')+'" style="margin-right:5px">'+
-                  esc(c.courseCode)+' '+c.percentage.toFixed(1)+'%</span>').join('') +
+                  esc(c.courseCode)+' '+AdminView._pct(c.percentage)+'</span>').join('') +
                 '</div>'
               : '';
 
@@ -1414,7 +1419,7 @@ const AdminView={
         const ass=(r.assessed != null ? r.assessed : r.percentage != null);
         return ['PO',r.programOutcome.code,r.programOutcome.title,
           !ass?'Not assessed':((r.attained != null ? r.attained : r.level==='L3')?'Attained':'Not Attained'),
-          ass?r.percentage.toFixed(1):''];
+          ass?AdminView._pct(r.percentage,''). replace('%',''):''];
       }),
       ['','','','',''],
     ];
@@ -1434,7 +1439,7 @@ const AdminView={
       const att=ass && (r.attained != null ? r.attained : r.level==='L3');
       const col=!ass?'#6b7280':(att?'#16a34a':'#dc2626');
       const txt=!ass?'Not assessed':(att?'Attained':'Not Attained');
-      return `<tr><td><b>${r.programOutcome.code}</b></td><td>${r.programOutcome.title}</td><td style="text-align:center;color:${col};font-weight:700">${txt}</td><td style="text-align:right">${ass?r.percentage.toFixed(1)+'%':'--'}</td></tr>`;
+      return `<tr><td><b>${r.programOutcome.code}</b></td><td>${r.programOutcome.title}</td><td style="text-align:center;color:${col};font-weight:700">${txt}</td><td style="text-align:right">${AdminView._pct(r.percentage)}</td></tr>`;
     }).join('');
     win.document.write(`<!DOCTYPE html><html><head><title>Attainment - ${name}</title><style>
       body{font-family:Arial,sans-serif;padding:30px;color:#222}

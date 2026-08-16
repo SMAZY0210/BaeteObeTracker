@@ -7,7 +7,11 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+CiAgPHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNiIgZmlsbD0iIzE2YTM0YSIvPgogIDx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBkb21pbmFudC1iYXNlbGluZT0iY2VudHJhbCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgCiAgICAgICAgZm9udC1mYW1pbHk9IkFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtd2VpZ2h0PSI4MDAiIGZvbnQtc2l6ZT0iMTMiIGZpbGw9IndoaXRlIj5PQkU8L3RleHQ+Cjwvc3ZnPg==">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/main.css">
+<!-- ?v=N on each asset is a cache buster. Browsers hold on to JS hard, and a
+     stale script against an updated API produces errors that look like backend
+     bugs. Bump the number in all of these together whenever the frontend
+     changes and the next load is guaranteed fresh. -->
+<link rel="stylesheet" href="css/main.css?v=3">
 </head>
 <body>
 
@@ -116,12 +120,12 @@
   </div>
 </div>
 
-<script src="js/api.js"></script>
-<script src="js/auth.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/views/admin.js"></script>
-<script src="js/views/faculty.js"></script>
-<script src="js/views/student.js"></script>
-<script src="js/app.js"></script>
+<script src="js/api.js?v=3"></script>
+<script src="js/auth.js?v=3"></script>
+<script src="js/ui.js?v=3"></script>
+<script src="js/views/admin.js?v=3"></script>
+<script src="js/views/faculty.js?v=3"></script>
+<script src="js/views/student.js?v=3"></script>
+<script src="js/app.js?v=3"></script>
 </body>
 </html>
