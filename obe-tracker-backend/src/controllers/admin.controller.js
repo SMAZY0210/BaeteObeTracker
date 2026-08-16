@@ -1066,6 +1066,41 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
     const courseMap = {};
     for (const e of enrolments) courseMap[e.course.id] = e.course;
 
+    // Every PO in the student's curriculum version, not just the ones that
+    // happen to have an attainment row.
+    //
+    // s.5.2(v) asks the programme to demonstrate that students attain ALL POs
+    // by graduation. A report that lists only the outcomes with data quietly
+    // drops the ones nothing has been mapped to, which is precisely the gap an
+    // evaluator is looking for. Showing them as unassessed states the gap
+    // instead of hiding it.
+    const studentRec = await prisma.user.findUnique({
+      where: { id: studentId },
+      select: { session: { select: { curriculumVersionId: true } } },
+    });
+
+    let allPos = [];
+    const cvId = studentRec?.session?.curriculumVersionId;
+    if (cvId) {
+      allPos = await prisma.programOutcome.findMany({
+        where: { curriculumVersionId: cvId, deletedAt: null },
+        select: { id: true, code: true, title: true, description: true },
+      });
+    } else if (enrolments.length) {
+      // No curriculum version on the batch: fall back to the programme of any
+      // course the student is enrolled in.
+      const c = await prisma.course.findUnique({
+        where: { id: enrolments[0].courseId },
+        select: { programId: true },
+      });
+      if (c) {
+        allPos = await prisma.programOutcome.findMany({
+          where: { programId: c.programId, deletedAt: null },
+          select: { id: true, code: true, title: true, description: true },
+        });
+      }
+    }
+
     // ── Aggregate PO rows across courses ────────────────────────────
     //
     // PoAttainment is unique on (programOutcomeId, studentId, courseId), so a
@@ -1078,7 +1113,10 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
     // rather than averaging the per-course percentages. Averaging would give a
     // course with one weakly-correlated CO the same say as a course with four
     // strongly-correlated ones.
-    const poIds = [...new Set(poRows.map((r) => r.programOutcomeId))];
+    // Union: every PO in the curriculum, plus any with stored rows that somehow
+    // sit outside it (a PO deleted after attainment was computed, say).
+    const poIds = [...new Set([...allPos.map((p) => p.id), ...poRows.map((r) => r.programOutcomeId)])];
+    const poMetaById = Object.fromEntries(allPos.map((p) => [p.id, p]));
 
     const mappings = poIds.length
       ? await prisma.coPoMapping.findMany({
@@ -1099,7 +1137,7 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
 
     const poAttainments = poIds.map((programOutcomeId) => {
       const rowsForPo = poRows.filter((r) => r.programOutcomeId === programOutcomeId);
-      const meta = rowsForPo[0].programOutcome;
+      const meta = poMetaById[programOutcomeId] || rowsForPo[0]?.programOutcome;
 
       const overall = computeStudentPoAttainment({
         studentId,
@@ -1136,9 +1174,14 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
         programOutcomeId,
         programOutcome: meta,
         percentage: overall ? overall.percentage : null,
+        // Unassessed is a third state, not a failure. A PO with no mapped CO, or
+        // one the student has no marks against, has produced no evidence either
+        // way, and reporting it as "not attained" would be a claim the data does
+        // not support.
+        assessed: !!overall,
         attained: overall ? overall.attained : false,
         level: overall ? overall.level : 'L0',
-        policyVersion: rowsForPo[0].policyVersion,
+        policyVersion: rowsForPo[0]?.policyVersion ?? null,
         breakdown: {
           contributors: contributors.map((c) => ({
             ...c,

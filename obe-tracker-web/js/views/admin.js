@@ -1295,24 +1295,9 @@ const AdminView={
         coByGroup[k].rows.push(r);
       });
 
-      let coHtml = '';
-      if((d.coAttainments||[]).length === 0){
-        coHtml = '<tr><td colspan="4" class="td-load text-muted">No CO attainment data yet</td></tr>';
-      } else {
-        (d.coAttainments||[]).forEach(r => {
-          // `attained` is the stored threshold decision. level is a display band
-          // (L3 starts at 80), so reading L3 as "attained" marked a CO sitting
-          // at 60 percent, exactly on the policy threshold, as not attained.
-          const att = r.attained != null ? r.attained : r.level==='L3';
-          coHtml += '<tr>' +
-            '<td><span class="badge bg-green">'+r.courseOutcome.code+'</span>' +
-              (r.courseOutcome.course?.code ? ' <span class="text-muted text-xs">'+esc(r.courseOutcome.course.code)+'</span>' : '') + '</td>' +
-            '<td>'+r.courseOutcome.title+'</td>' +
-            '<td style="text-align:center"><span class="badge '+(att?'bg-green':'bg-red')+'">'+(att?'Attained':'Not Attained')+'</span></td>' +
-            '<td style="text-align:right;font-weight:700;color:'+(att?'var(--l3)':'var(--l0)')+'">'+r.percentage.toFixed(1)+'%</td>' +
-            '</tr>';
-        });
-      }
+      // The standalone CO table is gone. Every CO now appears inside the PO
+      // row it feeds, which is the only context in which its figure means
+      // anything; on its own it was a second list of the same numbers.
 
       // Each PO row gets an expandable breakdown of the COs that produced its
       // figure. The server returns it on the row, so this is just markup: a PO
@@ -1323,19 +1308,30 @@ const AdminView={
         poHtml = '<tr><td colspan="5" class="td-load text-muted">No PO attainment data yet</td></tr>';
       } else {
         (d.poAttainments||[]).forEach(r => {
-          const att = r.attained != null ? r.attained : r.level==='L3';
+          const assessed = r.assessed != null ? r.assessed : r.percentage != null;
+          const att = assessed && (r.attained != null ? r.attained : r.level==='L3');
           const bd = r.breakdown || { contributors: [], countedCos: 0, unassessedCos: 0 };
           const rowId = 'stupo-' + r.programOutcomeId;
 
-          poHtml += '<tr>' +
+          // Three states, not two. An outcome with no marks behind it has
+          // produced no evidence either way, and calling that "not attained"
+          // claims something the data does not support.
+          const badge = !assessed
+            ? '<span class="badge bg-gray">Not assessed</span>'
+            : '<span class="badge '+(att?'bg-green':'bg-red')+'">'+(att?'Attained':'Not Attained')+'</span>';
+          const score = !assessed
+            ? '<span class="text-muted">--</span>'
+            : '<span style="font-weight:700;color:'+(att?'var(--l3)':'var(--l0)')+'">'+r.percentage.toFixed(1)+'%</span>';
+
+          poHtml += '<tr'+(assessed?'':' style="opacity:.62"')+'>' +
             '<td><span class="badge bg-blue">'+r.programOutcome.code+'</span></td>' +
             '<td>'+esc(r.programOutcome.title)+'</td>' +
-            '<td style="text-align:center"><span class="badge '+(att?'bg-green':'bg-red')+'">'+(att?'Attained':'Not Attained')+'</span></td>' +
-            '<td style="text-align:right;font-weight:700;color:'+(att?'var(--l3)':'var(--l0)')+'">'+r.percentage.toFixed(1)+'%</td>' +
+            '<td style="text-align:center">'+badge+'</td>' +
+            '<td style="text-align:right">'+score+'</td>' +
             '<td style="text-align:center">' +
               (bd.contributors.length
                 ? '<button class="btn btn-ghost btn-xs" onclick="AdminView._toggleRow(\''+rowId+'\')">'+ico('expand',12)+' '+bd.contributors.length+' CO'+(bd.contributors.length===1?'':'s')+'</button>'
-                : '<span class="text-muted text-sm">--</span>') +
+                : '<span class="text-muted text-sm" title="No course outcome in this student\'s courses maps to this PO">no CO mapped</span>') +
             '</td></tr>';
 
           if (bd.contributors.length) {
@@ -1389,17 +1385,20 @@ const AdminView={
         '</div>' +
         '<div class="sec-title mb2">Program Outcome Attainment</div>' +
         '<div class="tbl-wrap mb4"><table><thead><tr><th>PO</th><th>Title</th><th style="text-align:center">Result</th><th style="text-align:right">Score</th><th style="text-align:center">Breakdown</th></tr></thead>' +
-        '<tbody>'+poHtml+'</tbody></table></div>' +
-        '<div class="sec-title mb2">Course Outcome Attainment</div>' +
-        '<div class="tbl-wrap"><table><thead><tr><th>CO</th><th>Title</th><th style="text-align:center">Result</th><th style="text-align:right">Score</th></tr></thead>' +
-        '<tbody>'+coHtml+'</tbody></table></div>';
+        '<tbody>'+poHtml+'</tbody></table></div>';
       AdminView._lastStuReport = { student: stu, name, coAttainments: d.coAttainments||[], poAttainments: d.poAttainments||[] };
 
-      // Count the stored decision, not the L3 display band.
-      const attained = (d.poAttainments||[]).filter(r=>r.attained != null ? r.attained : r.level==='L3').length;
-      const total    = (d.poAttainments||[]).length;
+      // Counted against every PO in the curriculum, not just the assessed ones.
+      // "8/10" where two outcomes were quietly dropped reads better than the
+      // truth and is the sort of thing that unravels at a visit.
+      const rows     = d.poAttainments||[];
+      const isAss    = r => (r.assessed != null ? r.assessed : r.percentage != null);
+      const attained = rows.filter(r=>isAss(r) && (r.attained != null ? r.attained : r.level==='L3')).length;
+      const total    = rows.length;
+      const unass    = rows.filter(r=>!isAss(r)).length;
       document.getElementById('modal-ft').innerHTML =
-        '<span class="text-sm text-muted">PO attained: '+attained+'/'+total+'</span>' +
+        '<span class="text-sm text-muted">PO attained: '+attained+'/'+total+
+          (unass ? ' &middot; '+unass+' not assessed' : '')+'</span>' +
         '<button class="btn btn-secondary btn-sm" onclick="AdminView._exportStuCSV(\''+studentId+'\',\''+name+'\')">CSV</button>' +
         '<button class="btn btn-secondary btn-sm" onclick="AdminView._exportStuPDF(\''+studentId+'\',\''+name+'\')">PDF</button>' +
         '<button class="btn btn-ghost" onclick="closeModal()">Close</button>';
@@ -1411,9 +1410,13 @@ const AdminView={
     const rows=[
       ['Name', name],['ID', d.student.institutionalId||''],['',''],
       ['Type','Code','Title','Result','Score (%)'],
-      ...d.poAttainments.map(r=>['PO',r.programOutcome.code,r.programOutcome.title,(r.attained != null ? r.attained : r.level==='L3')?'Attained':'Not Attained',r.percentage.toFixed(1)]),
+      ...d.poAttainments.map(r=>{
+        const ass=(r.assessed != null ? r.assessed : r.percentage != null);
+        return ['PO',r.programOutcome.code,r.programOutcome.title,
+          !ass?'Not assessed':((r.attained != null ? r.attained : r.level==='L3')?'Attained':'Not Attained'),
+          ass?r.percentage.toFixed(1):''];
+      }),
       ['','','','',''],
-      ...d.coAttainments.map(r=>['CO',r.courseOutcome.code,r.courseOutcome.title,(r.attained != null ? r.attained : r.level==='L3')?'Attained':'Not Attained',r.percentage.toFixed(1)]),
     ];
     const csv=rows.map(r=>r.map(v=>'"'+String(v||'').replace(/"/g,'""')+'"').join(',')).join('\n');
     const a=document.createElement('a');
@@ -1426,8 +1429,13 @@ const AdminView={
     const stu=d.student;
     const batch=stu.session?.name || (stu.institutionalId?'Batch 20'+stu.institutionalId.substring(0,2):'--');
     const win=window.open('','_blank');
-    const poRows=d.poAttainments.map(r=>{const att=r.attained != null ? r.attained : r.level==='L3';return`<tr><td><b>${r.programOutcome.code}</b></td><td>${r.programOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
-    const coRows=d.coAttainments.map(r=>{const att=r.attained != null ? r.attained : r.level==='L3';return`<tr><td><b>${r.courseOutcome.code}</b></td><td>${r.courseOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
+    const poRows=d.poAttainments.map(r=>{
+      const ass=(r.assessed != null ? r.assessed : r.percentage != null);
+      const att=ass && (r.attained != null ? r.attained : r.level==='L3');
+      const col=!ass?'#6b7280':(att?'#16a34a':'#dc2626');
+      const txt=!ass?'Not assessed':(att?'Attained':'Not Attained');
+      return `<tr><td><b>${r.programOutcome.code}</b></td><td>${r.programOutcome.title}</td><td style="text-align:center;color:${col};font-weight:700">${txt}</td><td style="text-align:right">${ass?r.percentage.toFixed(1)+'%':'--'}</td></tr>`;
+    }).join('');
     win.document.write(`<!DOCTYPE html><html><head><title>Attainment - ${name}</title><style>
       body{font-family:Arial,sans-serif;padding:30px;color:#222}
       h1{font-size:20px;margin-bottom:4px}h2{font-size:15px;color:#555;margin:20px 0 8px}
@@ -1448,9 +1456,6 @@ const AdminView={
     <h2>Program Outcome Attainment</h2>
     <table><thead><tr><th>PO</th><th>Title</th><th>Result</th><th style="text-align:right">Score</th></tr></thead>
     <tbody>${poRows}</tbody></table>
-    <h2>Course Outcome Attainment</h2>
-    <table><thead><tr><th>CO</th><th>Title</th><th>Result</th><th style="text-align:right">Score</th></tr></thead>
-    <tbody>${coRows}</tbody></table>
     <button onclick="window.print()" style="margin-top:10px;padding:8px 20px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px">Print / Save as PDF</button>
     </body></html>`);
     win.document.close();
