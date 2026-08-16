@@ -265,10 +265,12 @@ const getMapping = async (req, res, next) => {
       prisma.courseOutcome.findMany({ where: { courseId, deletedAt: null }, orderBy: { code: 'asc' } }),
       prisma.programOutcome.findMany({
         where: { program: { courses: { some: { id: courseId } } }, deletedAt: null },
-        orderBy: { code: 'asc' },
       }),
       prisma.coPoMapping.findMany({ where: { courseId } }),
     ]);
+
+    // Numeric sort. Postgres orders code as text, which would put PO10 and PO12
+    // between PO1 and PO2 and make the mapping grid read wrong.
     const numSort = (a, b) => {
       const nA = parseInt(a.code.replace(/\D+/g, ''), 10);
       const nB = parseInt(b.code.replace(/\D+/g, ''), 10);

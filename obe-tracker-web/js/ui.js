@@ -191,6 +191,44 @@ function outcomeAttrSelectorHTML(attrs, selectedWk=[], selectedCa=[]){
        + attrGroupHTML('Complex Engineering Activities', 'EA1 to EA5, Table 6.3', attrs.complexActivity, 'ca-chk', selectedCa);
 }
 
+/**
+ * Programme outcome selector, same two-column shape as the attribute cards.
+ *
+ * The statements matter here more than anywhere else. Mapping a CO to "PO6 The
+ * Engineer and the World" from the title alone is guesswork; the v3 statement
+ * is specifically about analysing sustainable development impacts, and a
+ * mapping made without reading it is the sort an evaluator picks apart.
+ */
+function poSelectorHTML(pos, selectedIds=[]){
+  if(!pos || !pos.length){
+    return '<p class="text-sm text-muted">No POs defined for this program yet.</p>';
+  }
+  const on = new Set(selectedIds||[]);
+  return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
+    ${pos.map(po=>{
+      const id = 'pod-' + po.id;
+      const checked = on.has(po.id);
+      return `<div class="attr-card" style="border:1.5px solid ${checked?'var(--green)':'var(--border)'};border-radius:7px;overflow:hidden">
+        <div style="display:flex;align-items:flex-start;gap:9px;padding:9px 11px">
+          <input type="checkbox" class="co-po-chk" value="${po.id}" ${checked?'checked':''}
+            style="width:auto;margin-top:2px;accent-color:var(--green);flex:none"
+            onchange="this.closest('.attr-card').style.borderColor=this.checked?'var(--green)':'var(--border)'">
+          <div style="flex:1;min-width:0;cursor:pointer" onclick="toggleAttrDetail('${id}')">
+            <div style="font-size:12.5px"><b>${po.code}</b></div>
+            <div class="text-muted" style="font-size:11.5px;line-height:1.4;margin-top:1px">${esc(po.title||'')}</div>
+          </div>
+          <span onclick="toggleAttrDetail('${id}')" style="cursor:pointer;color:var(--text4);font-size:11px;flex:none;padding:2px 4px" title="Show the full PO statement">&#9660;</span>
+        </div>
+        <div id="${id}" style="display:none;padding:0 11px 10px 11px">
+          <div style="font-size:11.5px;line-height:1.55;color:var(--text3);border-top:1px solid var(--border);padding-top:8px">${esc(po.description||'No statement recorded.')}</div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function selectedPoIds(){ return [...document.querySelectorAll('.co-po-chk:checked')].map(c=>c.value); }
+
 function selectedWkCodes(){ return [...document.querySelectorAll('.wk-chk:checked')].map(c=>c.value); }
 function selectedCaCodes(){ return [...document.querySelectorAll('.ca-chk:checked')].map(c=>c.value); }
 

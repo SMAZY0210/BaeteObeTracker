@@ -160,17 +160,8 @@ const FacultyView = {
       <div class="divider"></div>
       <div class="fg">
         <label>Maps to Program Outcomes</label>
-        <p class="text-sm text-muted mb2">Check all POs this CO contributes to.</p>
-        <div style="display:flex;flex-wrap:wrap;gap:8px">
-          ${pos.map(po => `
-            <label style="display:flex;align-items:center;gap:7px;padding:7px 12px;border:1.5px solid var(--border);border-radius:8px;cursor:pointer;font-size:12.5px;min-width:100px"
-              onmouseenter="this.style.borderColor='var(--green)'" onmouseleave="this.style.borderColor='var(--border)'">
-              <input type="checkbox" class="new-co-po" value="${po.id}"
-                style="width:auto;accent-color:var(--green)">
-              <span><strong>${po.code}</strong> <span class="text-muted">${po.title}</span></span>
-            </label>`).join('')}
-        </div>
-        ${!pos.length ? '<p class="text-sm text-muted">No POs defined for this program yet.</p>' : ''}
+        <p class="text-sm text-muted mb2">Which POs this CO contributes to. Click a card to read the full BAETE statement before deciding.</p>
+        ${poSelectorHTML(pos)}
       </div>`,
       `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
        <button class="btn btn-primary" onclick="FacultyView._saveCO()">${ico('save')} Add CO</button>`, true);
@@ -209,7 +200,7 @@ const FacultyView = {
       const co = await Api.createCO(this._cid, d);
 
       // Save PO mappings for this CO - get all PO checkboxes
-      const checkedPoIds = [...document.querySelectorAll('.new-co-po:checked')].map(cb => cb.value);
+      const checkedPoIds = selectedPoIds();
       if (checkedPoIds.length) {
         // Fetch existing mappings, merge with new ones
         const { mappings: existingMappings, programOutcomes: pos } = await Api.getMapping(this._cid);
