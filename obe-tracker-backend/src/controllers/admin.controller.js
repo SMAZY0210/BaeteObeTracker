@@ -1160,9 +1160,32 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
     const poIds = [...new Set([...allPos.map((p) => p.id), ...poRows.map((r) => r.programOutcomeId)])];
     const poMetaById = Object.fromEntries(allPos.map((p) => [p.id, p]));
 
-    const mappings = poIds.length
+    // Scoped to the courses this student is actually enrolled in, and to live
+    // records only.
+    //
+    // The query used to fetch every mapping for the outcome across the whole
+    // programme, so a first-year student's PO1 breakdown listed course outcomes
+    // from third-year courses and from deleted ones, all marked "not assessed".
+    // None of them could ever contribute to that student's figure, and the note
+    // beneath read "5 mapped COs had no marks for this student", which invited
+    // the reading that marks were missing rather than that the courses were
+    // irrelevant.
+    //
+    // A CO from a course the student IS taking but has no marks for still shows
+    // as unassessed, which is the case actually worth seeing.
+    const enrolledCourseIds = enrolments.map((e) => e.courseId);
+    const scopeCourseIds = courseId
+      ? enrolledCourseIds.filter((id) => id === courseId)
+      : enrolledCourseIds;
+
+    const mappings = poIds.length && scopeCourseIds.length
       ? await prisma.coPoMapping.findMany({
-          where: { programOutcomeId: { in: poIds }, ...(courseId && { courseId }) },
+          where: {
+            programOutcomeId: { in: poIds },
+            courseId: { in: scopeCourseIds },
+            course: { deletedAt: null },
+            courseOutcome: { deletedAt: null },
+          },
           include: {
             courseOutcome: { select: { id: true, code: true, title: true } },
             course: { select: { id: true, code: true, name: true } },
