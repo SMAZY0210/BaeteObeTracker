@@ -199,11 +199,20 @@ function outcomeAttrSelectorHTML(attrs, selectedWk=[], selectedCa=[]){
  * is specifically about analysing sustainable development impacts, and a
  * mapping made without reading it is the sort an evaluator picks apart.
  */
-function poSelectorHTML(pos, selectedIds=[]){
+/**
+ * selected may be an array of PO ids or a { poId: 'STRONG'|'MODERATE'|'WEAK' }
+ * map. The strength matters: it is the weight the engine applies (weak 1,
+ * moderate 2, strong 3), and the previous dialog hardcoded every mapping to
+ * strong, which inflated every PO figure the outcome fed.
+ */
+function poSelectorHTML(pos, selected=[]){
   if(!pos || !pos.length){
     return '<p class="text-sm text-muted">No POs defined for this program yet.</p>';
   }
-  const on = new Set(selectedIds||[]);
+  const sel = Array.isArray(selected)
+    ? Object.fromEntries(selected.map(id=>[id,'STRONG']))
+    : (selected || {});
+  const on = new Set(Object.keys(sel));
   return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px">
     ${pos.map(po=>{
       const id = 'pod-' + po.id;
@@ -217,6 +226,13 @@ function poSelectorHTML(pos, selectedIds=[]){
             <div style="font-size:12.5px"><b>${po.code}</b></div>
             <div class="text-muted" style="font-size:11.5px;line-height:1.4;margin-top:1px">${esc(po.title||'')}</div>
           </div>
+          <select class="co-po-corr" data-po="${po.id}" onclick="event.stopPropagation()"
+            title="How strongly this CO contributes to the outcome"
+            style="width:auto;flex:none;font-size:10.5px;padding:2px 4px;height:auto;${checked?'':'visibility:hidden'}">
+            <option value="STRONG"${sel[po.id]==='STRONG'||!sel[po.id]?' selected':''}>S</option>
+            <option value="MODERATE"${sel[po.id]==='MODERATE'?' selected':''}>M</option>
+            <option value="WEAK"${sel[po.id]==='WEAK'?' selected':''}>W</option>
+          </select>
           <span onclick="toggleAttrDetail('${id}')" style="cursor:pointer;color:var(--text4);font-size:11px;flex:none;padding:2px 4px" title="Show the full PO statement">&#9660;</span>
         </div>
         <div id="${id}" style="display:none;padding:0 11px 10px 11px">
@@ -228,6 +244,15 @@ function poSelectorHTML(pos, selectedIds=[]){
 }
 
 function selectedPoIds(){ return [...document.querySelectorAll('.co-po-chk:checked')].map(c=>c.value); }
+
+/** Checked POs with their chosen strength. Unchecked ones are simply absent. */
+function selectedPoMappings(){
+  return [...document.querySelectorAll('.co-po-chk:checked')].map(c=>{
+    const card = c.closest('.attr-card');
+    const corr = card?.querySelector('.co-po-corr')?.value || 'STRONG';
+    return { programOutcomeId: c.value, correlation: corr };
+  });
+}
 
 function selectedWkCodes(){ return [...document.querySelectorAll('.wk-chk:checked')].map(c=>c.value); }
 function selectedCaCodes(){ return [...document.querySelectorAll('.ca-chk:checked')].map(c=>c.value); }

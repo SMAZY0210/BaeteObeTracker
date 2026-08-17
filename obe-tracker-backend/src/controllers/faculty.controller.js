@@ -31,8 +31,12 @@ const getCourseOutcomes = async (req, res, next) => {
     await assertFacultyOwns(req.user, courseId);
     const items = await prisma.courseOutcome.findMany({
       where: { courseId, deletedAt: null },
-      include: CO_INCLUDE,
+      // One include, merged. There were two keys here: an object literal keeps
+      // only the last, so CO_INCLUDE was silently discarded and the WK, WP and
+      // EA links never came back. The mappings saved correctly all along; the
+      // list simply could not see them.
       include: {
+        ...CO_INCLUDE,
         mappings: {
           include: { programOutcome: { select: { id: true, code: true, title: true } } },
         },
@@ -129,8 +133,16 @@ const createCourseOutcome = async (req, res, next) => {
       knowledgeProfileCodes, complexAttributeCodes,
     } = req.body;
 
-    const existing = await prisma.courseOutcome.findFirst({ where: { courseId, code, deletedAt: null } });
-    if (existing) {
+    // The unique constraint is (courseId, code) with no deletedAt in it, so a
+    // soft-deleted outcome still occupies its code. Checking only live rows let
+    // the application say "CO4 is free" while the database disagreed, and the
+    // failure surfaced as a raw constraint error with no useful message.
+    //
+    // Deleting a CO already refuses while it has mappings or assessments, so a
+    // soft-deleted one carries no dependants and reviving it is safe: the code
+    // is reused with whatever the teacher just typed.
+    const existing = await prisma.courseOutcome.findFirst({ where: { courseId, code } });
+    if (existing && !existing.deletedAt) {
       return res.status(409).json({ status: 'error', error: `CO code "${code}" already exists in this course.` });
     }
 
@@ -139,16 +151,45 @@ const createCourseOutcome = async (req, res, next) => {
       resolveComplexIds(complexAttributeCodes),
     ]);
 
-    const item = await prisma.courseOutcome.create({
-      data: {
-        courseId, code, title, description,
-        knowledgeProfiles: { create: wkIds.map((id) => ({ knowledgeProfileId: id })) },
-        complexAttributes: { create: caIds.map((id) => ({ complexAttributeId: id })) },
-      },
-      include: CO_INCLUDE,
-    });
+    let item;
+    if (existing) {
+      // Revive. Attainment rows from before the delete are cleared, because a
+      // reused code is a new outcome and carrying the previous cohort's figures
+      // into it would be quietly wrong.
+      item = await prisma.$transaction(async (tx) => {
+        await tx.courseOutcomeWk.deleteMany({ where: { courseOutcomeId: existing.id } });
+        await tx.courseOutcomeComplexAttr.deleteMany({ where: { courseOutcomeId: existing.id } });
+        await tx.coAttainment.deleteMany({ where: { courseOutcomeId: existing.id } });
+        await tx.courseCoAttainment.deleteMany({ where: { courseOutcomeId: existing.id } });
+        return tx.courseOutcome.update({
+          where: { id: existing.id },
+          data: {
+            code, title, description,
+            deletedAt: null,
+            isActive: true,
+            knowledgeProfiles: { create: wkIds.map((id) => ({ knowledgeProfileId: id })) },
+            complexAttributes: { create: caIds.map((id) => ({ complexAttributeId: id })) },
+          },
+          include: CO_INCLUDE,
+        });
+      });
+    } else {
+      item = await prisma.courseOutcome.create({
+        data: {
+          courseId, code, title, description,
+          knowledgeProfiles: { create: wkIds.map((id) => ({ knowledgeProfileId: id })) },
+          complexAttributes: { create: caIds.map((id) => ({ complexAttributeId: id })) },
+        },
+        include: CO_INCLUDE,
+      });
+    }
 
-    res.status(201).json({ status: 'success', data: item, warning: wp1Warning(complexAttributeCodes) });
+    res.status(201).json({
+      status: 'success',
+      data: item,
+      warning: wp1Warning(complexAttributeCodes),
+      revived: existing ? `Reused the code from a previously deleted outcome.` : undefined,
+    });
   } catch (err) {
     if (err.status === 400) return res.status(400).json({ status: 'error', error: err.message });
     next(err);
@@ -161,14 +202,20 @@ const updateCourseOutcome = async (req, res, next) => {
     await assertFacultyOwns(req.user, courseId);
     const {
       code, title, description,
-      knowledgeProfileCodes, complexAttributeCodes,
+      knowledgeProfileCodes, complexAttributeCodes, poMappings,
     } = req.body;
 
-    const existing = await prisma.courseOutcome.findFirst({
-      where: { courseId, code, deletedAt: null, NOT: { id } },
-    });
-    if (existing) {
-      return res.status(409).json({ status: 'error', error: `CO code "${code}" already exists in this course.` });
+    // Same constraint applies on rename: a soft-deleted outcome still holds the
+    // code, so renaming CO5 to CO4 would fail at the database if CO4 was deleted
+    // rather than being caught here.
+    const clash = await prisma.courseOutcome.findFirst({ where: { courseId, code, NOT: { id } } });
+    if (clash) {
+      return res.status(409).json({
+        status: 'error',
+        error: clash.deletedAt
+          ? `CO code "${code}" belongs to a deleted outcome in this course. Pick another code, or recreate "${code}" from Add CO to reuse it.`
+          : `CO code "${code}" already exists in this course.`,
+      });
     }
 
     // Only touch a link set when the caller actually sent it, so a partial
@@ -179,6 +226,19 @@ const updateCourseOutcome = async (req, res, next) => {
       touchWk ? resolveWkIds(knowledgeProfileCodes) : [],
       touchCa ? resolveComplexIds(complexAttributeCodes) : [],
     ]);
+
+    // PO mappings are editable here now. Previously they could only be set when
+    // the outcome was created, and deleting the outcome was refused while it had
+    // any, so a CO with a mapping could be neither changed nor removed.
+    const VALID_CORR = ['WEAK', 'MODERATE', 'STRONG'];
+    const touchPo = poMappings !== undefined;
+    const keepPo = touchPo
+      ? (poMappings || []).filter((m) => m && m.programOutcomeId && VALID_CORR.includes(m.correlation))
+      : [];
+
+    const mapVersion = touchPo
+      ? ((await prisma.coPoMapping.findFirst({ where: { courseId }, orderBy: { version: 'desc' } }))?.version || 0) + 1
+      : null;
 
     const item = await prisma.$transaction(async (tx) => {
       if (touchWk) {
@@ -197,12 +257,32 @@ const updateCourseOutcome = async (req, res, next) => {
           });
         }
       }
+      if (touchPo) {
+        // Scoped to this outcome, so editing one CO cannot disturb another's
+        // mappings. Unticked means the row goes, since correlation cannot be null.
+        await tx.coPoMapping.deleteMany({ where: { courseOutcomeId: id } });
+        if (keepPo.length) {
+          await tx.coPoMapping.createMany({
+            data: keepPo.map((m) => ({
+              courseId,
+              courseOutcomeId: id,
+              programOutcomeId: m.programOutcomeId,
+              correlation: m.correlation,
+              version: mapVersion,
+            })),
+          });
+        }
+      }
       return tx.courseOutcome.update({
         where: { id },
         data: { code, title, description },
         include: CO_INCLUDE,
       });
     });
+
+    // PO figures are a correlation-weighted function of the matrix, so they are
+    // wrong the moment it changes.
+    if (touchPo) await recomputeAttainmentForCourse(courseId, mapVersion, req.user.institutionId);
 
     res.json({ status: 'success', data: item, warning: touchCa ? wp1Warning(complexAttributeCodes) : null });
   } catch (err) {
@@ -247,13 +327,41 @@ const deleteCourseOutcome = async (req, res, next) => {
   try {
     const { courseId, id } = req.params;
     await assertFacultyOwns(req.user, courseId);
-    const hasMapping = await prisma.coPoMapping.findFirst({ where: { courseOutcomeId: id } });
-    const hasAssessment = await prisma.assessmentCO.findFirst({ where: { courseOutcomeId: id } });
-    if (hasMapping || hasAssessment) {
-      return res.status(409).json({ status: 'error', error: 'CO has mappings or assessments. Remove those first.' });
+    // Only assessments block. A CO-PO mapping is a statement about the outcome
+    // and means nothing once the outcome is gone, so it is removed with it.
+    // Refusing on mappings left outcomes that could be neither edited nor
+    // deleted, because the edit dialog had no way to clear them.
+    //
+    // An assessment link is different: student marks hang off it, and dropping
+    // the outcome would strand them.
+    const assessmentLinks = await prisma.assessmentCO.findMany({
+      where: { courseOutcomeId: id },
+      include: { assessment: { select: { title: true } } },
+    });
+    if (assessmentLinks.length) {
+      return res.status(409).json({
+        status: 'error',
+        error: `This CO is assessed by ${assessmentLinks.length} assessment(s): ${assessmentLinks.map((a) => a.assessment.title).join(', ')}. Remove it from those first, or the marks recorded against it would be stranded.`,
+      });
     }
-    await prisma.courseOutcome.update({ where: { id }, data: { deletedAt: new Date(), isActive: false } });
-    res.json({ status: 'success', data: { message: 'CO removed' } });
+
+    const removed = await prisma.coPoMapping.count({ where: { courseOutcomeId: id } });
+
+    await prisma.$transaction([
+      prisma.coPoMapping.deleteMany({ where: { courseOutcomeId: id } }),
+      prisma.courseOutcomeWk.deleteMany({ where: { courseOutcomeId: id } }),
+      prisma.courseOutcomeComplexAttr.deleteMany({ where: { courseOutcomeId: id } }),
+      prisma.coAttainment.deleteMany({ where: { courseOutcomeId: id } }),
+      prisma.courseCoAttainment.deleteMany({ where: { courseOutcomeId: id } }),
+      prisma.courseOutcome.update({ where: { id }, data: { deletedAt: new Date(), isActive: false } }),
+    ]);
+
+    if (removed) await recomputeAttainmentForCourse(courseId, null, req.user.institutionId);
+
+    res.json({
+      status: 'success',
+      data: { message: `CO removed${removed ? `, ${removed} PO mapping(s) cleared` : ''}` },
+    });
   } catch (err) { next(err); }
 };
 
@@ -286,19 +394,51 @@ const saveMapping = async (req, res, next) => {
     const { courseId } = req.params;
     await assertFacultyOwns(req.user, courseId);
     const { mappings } = req.body;
-    const existing = await prisma.coPoMapping.findFirst({ where: { courseId }, orderBy: { version: 'desc' } });
-    const nextVersion = (existing?.version || 0) + 1;
-    await prisma.$transaction(
-      mappings.map(({ courseOutcomeId, programOutcomeId, correlation }) =>
-        prisma.coPoMapping.upsert({
-          where: { courseId_courseOutcomeId_programOutcomeId: { courseId, courseOutcomeId, programOutcomeId } },
-          create: { courseId, courseOutcomeId, programOutcomeId, correlation: correlation || null, version: nextVersion },
-          update: { correlation: correlation || null, version: nextVersion },
-        })
-      )
+    const latest = await prisma.coPoMapping.findFirst({ where: { courseId }, orderBy: { version: 'desc' } });
+    const nextVersion = (latest?.version || 0) + 1;
+
+    // correlation is non-nullable: a mapping without a strength is not a
+    // mapping. "Not mapped" is expressed by the row being absent, not by a null.
+    const VALID = ['WEAK', 'MODERATE', 'STRONG'];
+    const keep = (mappings || []).filter(
+      (m) => m && m.courseOutcomeId && m.programOutcomeId && VALID.includes(m.correlation)
     );
+
+    // Replace rather than upsert.
+    //
+    // upsert's `create` accepts either the relation form or the scalar-FK form
+    // and Prisma decides which at runtime. It was landing on the relation form
+    // and rejecting the payload with "Argument `course` is missing" even when
+    // the correlation was a perfectly valid MODERATE, so the failure was in that
+    // resolution rather than in the data. createMany takes plain scalars and has
+    // no such union, and delete-then-insert says what is actually meant: the
+    // matrix for these outcomes becomes exactly what was sent.
+    const touchedCoIds = [...new Set((mappings || []).map((m) => m && m.courseOutcomeId).filter(Boolean))];
+
+    await prisma.$transaction([
+      ...(touchedCoIds.length
+        ? [prisma.coPoMapping.deleteMany({ where: { courseId, courseOutcomeId: { in: touchedCoIds } } })]
+        : []),
+      ...(keep.length
+        ? [
+            prisma.coPoMapping.createMany({
+              data: keep.map(({ courseOutcomeId, programOutcomeId, correlation }) => ({
+                courseId,
+                courseOutcomeId,
+                programOutcomeId,
+                correlation,
+                version: nextVersion,
+              })),
+            }),
+          ]
+        : []),
+    ]);
+
     await recomputeAttainmentForCourse(courseId, nextVersion, req.user.institutionId);
-    res.json({ status: 'success', data: { message: 'Mapping saved', version: nextVersion } });
+    res.json({
+      status: 'success',
+      data: { message: 'Mapping saved', version: nextVersion, saved: keep.length },
+    });
   } catch (err) { next(err); }
 };
 

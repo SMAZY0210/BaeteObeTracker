@@ -104,7 +104,7 @@ const FacultyView = {
           })()}</td>
           <td>${poLinks}</td>
           <td class="td-r" style="white-space:nowrap;vertical-align:middle">
-            <button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="FacultyView._editCO('${co.id}','${co.code}','${co.title.replace(/'/g,"&#39;")}','${(co.description||'').replace(/'/g,"&#39;")}','${(co.knowledgeProfiles||[]).map(k=>k.knowledgeProfile.code).join(',')}','${(co.complexAttributes||[]).map(k=>k.complexAttribute.code).join(',')}')">${ico('edit',13)} Edit</button>
+            <button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="FacultyView._editCO('${co.id}','${co.code}','${co.title.replace(/'/g,"&#39;")}','${(co.description||'').replace(/'/g,"&#39;")}','${(co.knowledgeProfiles||[]).map(k=>k.knowledgeProfile.code).join(',')}','${(co.complexAttributes||[]).map(k=>k.complexAttribute.code).join(',')}','${(co.mappings||[]).filter(m=>m.correlation).map(m=>m.programOutcomeId+':'+m.correlation).join(',')}')">${ico('edit',13)} Edit</button>
             <button class="icon-btn danger" style="vertical-align:middle" onclick="FacultyView._delCO('${co.id}','${co.code}')">${ico('trash',13)}</button>
           </td>
         </tr>`;
@@ -188,10 +188,18 @@ const FacultyView = {
 
   // wkRaw and caRaw are comma-separated code lists already on this outcome,
   // passed through the onclick attribute rather than refetched.
-  async _editCO(coId, code, title, description, wkRaw, caRaw) {
+  // poRaw is "poId:STRONG,poId:WEAK" for the mappings already on this outcome.
+  async _editCO(coId, code, title, description, wkRaw, caRaw, poRaw) {
     const attrs = await loadOutcomeAttributes();
     const currentWk = (wkRaw || '').split(',').filter(Boolean);
     const currentCa = (caRaw || '').split(',').filter(Boolean);
+    const currentPo = Object.fromEntries(
+      (poRaw || '').split(',').filter(Boolean).map(pair => {
+        const [id, corr] = pair.split(':');
+        return [id, corr || 'STRONG'];
+      })
+    );
+    const { programOutcomes: pos } = await Api.getMapping(this._cid);
 
     showModal('Edit Course Outcome', `
       <div class="form-row fr2 mb3">
@@ -203,6 +211,14 @@ const FacultyView = {
       <div class="fg mb3">
         <label>BAETE Attributes <span class="text-muted">(click a card to read the full wording)</span></label>
         ${outcomeAttrSelectorHTML(attrs, currentWk, currentCa)}
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="fg">
+        <label>Maps to Program Outcomes</label>
+        <p class="text-sm text-muted mb2">Untick to remove a mapping. S, M and W set how strongly this CO contributes; the engine weights them 3, 2 and 1.</p>
+        ${poSelectorHTML(pos, currentPo)}
       </div>`,
       `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
        <button class="btn btn-primary" onclick="FacultyView._saveEditCO('${coId}')">${ico('save')} Save CO</button>`, true);
@@ -215,11 +231,12 @@ const FacultyView = {
       description: document.getElementById('eco-desc').value.trim() || null,
       knowledgeProfileCodes: selectedWkCodes(),
       complexAttributeCodes: selectedCaCodes(),
+      poMappings: selectedPoMappings(),
     };
     if (!d.code || !d.title) return toast('Code and title required', 'err');
     try {
       await Api.updateCO(this._cid, coId, d);
-      toast('CO updated');
+      toast(`CO updated, ${d.poMappings.length} PO mapping${d.poMappings.length===1?'':'s'}`);
       closeModal();
       this._loadCOs();
     } catch(e) { toast(e.message, 'err'); }
