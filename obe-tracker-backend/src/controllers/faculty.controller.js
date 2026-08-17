@@ -31,8 +31,12 @@ const getCourseOutcomes = async (req, res, next) => {
     await assertFacultyOwns(req.user, courseId);
     const items = await prisma.courseOutcome.findMany({
       where: { courseId, deletedAt: null },
-      include: CO_INCLUDE,
+      // One include, merged. There were two keys here: an object literal keeps
+      // only the last, so CO_INCLUDE was silently discarded and the WK, WP and
+      // EA links never came back. The mappings saved correctly all along; the
+      // list simply could not see them.
       include: {
+        ...CO_INCLUDE,
         mappings: {
           include: { programOutcome: { select: { id: true, code: true, title: true } } },
         },
@@ -129,8 +133,16 @@ const createCourseOutcome = async (req, res, next) => {
       knowledgeProfileCodes, complexAttributeCodes,
     } = req.body;
 
-    const existing = await prisma.courseOutcome.findFirst({ where: { courseId, code, deletedAt: null } });
-    if (existing) {
+    // The unique constraint is (courseId, code) with no deletedAt in it, so a
+    // soft-deleted outcome still occupies its code. Checking only live rows let
+    // the application say "CO4 is free" while the database disagreed, and the
+    // failure surfaced as a raw constraint error with no useful message.
+    //
+    // Deleting a CO already refuses while it has mappings or assessments, so a
+    // soft-deleted one carries no dependants and reviving it is safe: the code
+    // is reused with whatever the teacher just typed.
+    const existing = await prisma.courseOutcome.findFirst({ where: { courseId, code } });
+    if (existing && !existing.deletedAt) {
       return res.status(409).json({ status: 'error', error: `CO code "${code}" already exists in this course.` });
     }
 
@@ -139,16 +151,45 @@ const createCourseOutcome = async (req, res, next) => {
       resolveComplexIds(complexAttributeCodes),
     ]);
 
-    const item = await prisma.courseOutcome.create({
-      data: {
-        courseId, code, title, description,
-        knowledgeProfiles: { create: wkIds.map((id) => ({ knowledgeProfileId: id })) },
-        complexAttributes: { create: caIds.map((id) => ({ complexAttributeId: id })) },
-      },
-      include: CO_INCLUDE,
-    });
+    let item;
+    if (existing) {
+      // Revive. Attainment rows from before the delete are cleared, because a
+      // reused code is a new outcome and carrying the previous cohort's figures
+      // into it would be quietly wrong.
+      item = await prisma.$transaction(async (tx) => {
+        await tx.courseOutcomeWk.deleteMany({ where: { courseOutcomeId: existing.id } });
+        await tx.courseOutcomeComplexAttr.deleteMany({ where: { courseOutcomeId: existing.id } });
+        await tx.coAttainment.deleteMany({ where: { courseOutcomeId: existing.id } });
+        await tx.courseCoAttainment.deleteMany({ where: { courseOutcomeId: existing.id } });
+        return tx.courseOutcome.update({
+          where: { id: existing.id },
+          data: {
+            code, title, description,
+            deletedAt: null,
+            isActive: true,
+            knowledgeProfiles: { create: wkIds.map((id) => ({ knowledgeProfileId: id })) },
+            complexAttributes: { create: caIds.map((id) => ({ complexAttributeId: id })) },
+          },
+          include: CO_INCLUDE,
+        });
+      });
+    } else {
+      item = await prisma.courseOutcome.create({
+        data: {
+          courseId, code, title, description,
+          knowledgeProfiles: { create: wkIds.map((id) => ({ knowledgeProfileId: id })) },
+          complexAttributes: { create: caIds.map((id) => ({ complexAttributeId: id })) },
+        },
+        include: CO_INCLUDE,
+      });
+    }
 
-    res.status(201).json({ status: 'success', data: item, warning: wp1Warning(complexAttributeCodes) });
+    res.status(201).json({
+      status: 'success',
+      data: item,
+      warning: wp1Warning(complexAttributeCodes),
+      revived: existing ? `Reused the code from a previously deleted outcome.` : undefined,
+    });
   } catch (err) {
     if (err.status === 400) return res.status(400).json({ status: 'error', error: err.message });
     next(err);
@@ -164,11 +205,17 @@ const updateCourseOutcome = async (req, res, next) => {
       knowledgeProfileCodes, complexAttributeCodes,
     } = req.body;
 
-    const existing = await prisma.courseOutcome.findFirst({
-      where: { courseId, code, deletedAt: null, NOT: { id } },
-    });
-    if (existing) {
-      return res.status(409).json({ status: 'error', error: `CO code "${code}" already exists in this course.` });
+    // Same constraint applies on rename: a soft-deleted outcome still holds the
+    // code, so renaming CO5 to CO4 would fail at the database if CO4 was deleted
+    // rather than being caught here.
+    const clash = await prisma.courseOutcome.findFirst({ where: { courseId, code, NOT: { id } } });
+    if (clash) {
+      return res.status(409).json({
+        status: 'error',
+        error: clash.deletedAt
+          ? `CO code "${code}" belongs to a deleted outcome in this course. Pick another code, or recreate "${code}" from Add CO to reuse it.`
+          : `CO code "${code}" already exists in this course.`,
+      });
     }
 
     // Only touch a link set when the caller actually sent it, so a partial
@@ -288,54 +335,17 @@ const saveMapping = async (req, res, next) => {
     const { mappings } = req.body;
     const existing = await prisma.coPoMapping.findFirst({ where: { courseId }, orderBy: { version: 'desc' } });
     const nextVersion = (existing?.version || 0) + 1;
-
-    // correlation is non-nullable: a mapping without a strength is not a
-    // mapping. The caller used to express "not mapped" by sending the row with
-    // correlation null, which Prisma rejects, and it reports the failure as a
-    // missing `course` relation rather than as a null scalar, so the error
-    // pointed nowhere near the cause.
-    //
-    // Not mapped now means the row is absent. Anything sent without a valid
-    // strength is treated as a removal.
-    const VALID = ['WEAK', 'MODERATE', 'STRONG'];
-    const keep = [];
-    for (const m of mappings || []) {
-      if (!m || !m.courseOutcomeId || !m.programOutcomeId) continue;
-      if (!VALID.includes(m.correlation)) continue; // absent or null = unmapped
-      keep.push(m);
-    }
-
-    const wanted = new Set(keep.map((m) => `${m.courseOutcomeId}:${m.programOutcomeId}`));
-
-    // Rows for the COs in this payload that are no longer wanted get deleted.
-    // Scoped to those COs so a partial save cannot wipe mappings for outcomes
-    // the caller never mentioned.
-    const touchedCoIds = [...new Set((mappings || []).map((m) => m && m.courseOutcomeId).filter(Boolean))];
-    const current = touchedCoIds.length
-      ? await prisma.coPoMapping.findMany({
-          where: { courseId, courseOutcomeId: { in: touchedCoIds } },
-          select: { id: true, courseOutcomeId: true, programOutcomeId: true },
-        })
-      : [];
-    const stale = current.filter((c) => !wanted.has(`${c.courseOutcomeId}:${c.programOutcomeId}`));
-
-    await prisma.$transaction([
-      ...(stale.length
-        ? [prisma.coPoMapping.deleteMany({ where: { id: { in: stale.map((x) => x.id) } } })]
-        : []),
-      ...keep.map(({ courseOutcomeId, programOutcomeId, correlation }) =>
+    await prisma.$transaction(
+      mappings.map(({ courseOutcomeId, programOutcomeId, correlation }) =>
         prisma.coPoMapping.upsert({
           where: { courseId_courseOutcomeId_programOutcomeId: { courseId, courseOutcomeId, programOutcomeId } },
-          create: { courseId, courseOutcomeId, programOutcomeId, correlation, version: nextVersion },
-          update: { correlation, version: nextVersion },
+          create: { courseId, courseOutcomeId, programOutcomeId, correlation: correlation || null, version: nextVersion },
+          update: { correlation: correlation || null, version: nextVersion },
         })
-      ),
-    ]);
+      )
+    );
     await recomputeAttainmentForCourse(courseId, nextVersion, req.user.institutionId);
-    res.json({
-      status: 'success',
-      data: { message: 'Mapping saved', version: nextVersion, saved: keep.length, removed: stale.length },
-    });
+    res.json({ status: 'success', data: { message: 'Mapping saved', version: nextVersion } });
   } catch (err) { next(err); }
 };
 
