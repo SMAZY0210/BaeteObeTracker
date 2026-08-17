@@ -157,23 +157,28 @@ const FacultyView = {
       const co = await Api.createCO(this._cid, d);
 
       // Save PO mappings for this CO - get all PO checkboxes
-      const checkedPoIds = selectedPoIds();
-      if (checkedPoIds.length) {
-        // Fetch existing mappings, merge with new ones
-        const { mappings: existingMappings, programOutcomes: pos } = await Api.getMapping(this._cid);
-        const newMappings = pos.map(po => ({
+      // Send only the POs that were actually ticked, each with its chosen
+      // strength. The previous version sent a row for every PO with
+      // correlation null for the unticked ones, which the API rejects now that
+      // a mapping without a strength is not a mapping, and it hardcoded every
+      // strength to STRONG regardless of what the teacher meant.
+      const picked = selectedPoMappings();
+      if (picked.length) {
+        const { mappings: existingMappings } = await Api.getMapping(this._cid);
+        const newMappings = picked.map(p => ({
           courseOutcomeId: co.id,
-          programOutcomeId: po.id,
-          correlation: checkedPoIds.includes(po.id) ? 'STRONG' : null,
+          programOutcomeId: p.programOutcomeId,
+          correlation: p.correlation,
         }));
-        // Also preserve existing mappings for OTHER COs
+        // Preserve mappings belonging to other COs, dropping any that somehow
+        // lack a strength so an old bad row cannot fail the whole save.
         const otherMappings = existingMappings
-          .filter(m => m.courseOutcomeId !== co.id)
+          .filter(m => m.courseOutcomeId !== co.id && m.correlation)
           .map(m => ({ courseOutcomeId: m.courseOutcomeId, programOutcomeId: m.programOutcomeId, correlation: m.correlation }));
         await Api.saveMapping(this._cid, [...otherMappings, ...newMappings]);
       }
 
-      toast('CO added' + (checkedPoIds.length ? ' with PO mappings' : ''));
+      toast('CO added' + (picked.length ? ` with ${picked.length} PO mapping${picked.length===1?'':'s'}` : ''));
       closeModal();
       this._loadCOs();
     }

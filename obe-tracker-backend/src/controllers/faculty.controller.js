@@ -288,17 +288,54 @@ const saveMapping = async (req, res, next) => {
     const { mappings } = req.body;
     const existing = await prisma.coPoMapping.findFirst({ where: { courseId }, orderBy: { version: 'desc' } });
     const nextVersion = (existing?.version || 0) + 1;
-    await prisma.$transaction(
-      mappings.map(({ courseOutcomeId, programOutcomeId, correlation }) =>
+
+    // correlation is non-nullable: a mapping without a strength is not a
+    // mapping. The caller used to express "not mapped" by sending the row with
+    // correlation null, which Prisma rejects, and it reports the failure as a
+    // missing `course` relation rather than as a null scalar, so the error
+    // pointed nowhere near the cause.
+    //
+    // Not mapped now means the row is absent. Anything sent without a valid
+    // strength is treated as a removal.
+    const VALID = ['WEAK', 'MODERATE', 'STRONG'];
+    const keep = [];
+    for (const m of mappings || []) {
+      if (!m || !m.courseOutcomeId || !m.programOutcomeId) continue;
+      if (!VALID.includes(m.correlation)) continue; // absent or null = unmapped
+      keep.push(m);
+    }
+
+    const wanted = new Set(keep.map((m) => `${m.courseOutcomeId}:${m.programOutcomeId}`));
+
+    // Rows for the COs in this payload that are no longer wanted get deleted.
+    // Scoped to those COs so a partial save cannot wipe mappings for outcomes
+    // the caller never mentioned.
+    const touchedCoIds = [...new Set((mappings || []).map((m) => m && m.courseOutcomeId).filter(Boolean))];
+    const current = touchedCoIds.length
+      ? await prisma.coPoMapping.findMany({
+          where: { courseId, courseOutcomeId: { in: touchedCoIds } },
+          select: { id: true, courseOutcomeId: true, programOutcomeId: true },
+        })
+      : [];
+    const stale = current.filter((c) => !wanted.has(`${c.courseOutcomeId}:${c.programOutcomeId}`));
+
+    await prisma.$transaction([
+      ...(stale.length
+        ? [prisma.coPoMapping.deleteMany({ where: { id: { in: stale.map((x) => x.id) } } })]
+        : []),
+      ...keep.map(({ courseOutcomeId, programOutcomeId, correlation }) =>
         prisma.coPoMapping.upsert({
           where: { courseId_courseOutcomeId_programOutcomeId: { courseId, courseOutcomeId, programOutcomeId } },
-          create: { courseId, courseOutcomeId, programOutcomeId, correlation: correlation || null, version: nextVersion },
-          update: { correlation: correlation || null, version: nextVersion },
+          create: { courseId, courseOutcomeId, programOutcomeId, correlation, version: nextVersion },
+          update: { correlation, version: nextVersion },
         })
-      )
-    );
+      ),
+    ]);
     await recomputeAttainmentForCourse(courseId, nextVersion, req.user.institutionId);
-    res.json({ status: 'success', data: { message: 'Mapping saved', version: nextVersion } });
+    res.json({
+      status: 'success',
+      data: { message: 'Mapping saved', version: nextVersion, saved: keep.length, removed: stale.length },
+    });
   } catch (err) { next(err); }
 };
 
