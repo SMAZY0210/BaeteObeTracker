@@ -848,6 +848,15 @@ const AdminView={
     const section = document.getElementById('en-section')?.value;
     const resEl = document.getElementById('en-result');
     if(!courseId) return toast('Select a course first','err');
+
+    // Without a batch the server would have matched every student in the
+    // institution, so "Batch 2026, all sections" quietly enrolled section A of
+    // every other batch as well. The server refuses this now; the client should
+    // not send it in the first place.
+    if(!sessionId) return toast('Pick a batch first. Without one this would enrol every student in the institution.','err');
+
+    const batchLabel = document.querySelector(`#en-batch option[value="${sessionId}"]`)?.textContent || 'this batch';
+    if(!confirm(`Enrol ${section ? 'Section '+section+' of ' : 'all sections of '}${batchLabel} into this course?`)) return;
     resEl.innerHTML=`<div class="loading-box" style="padding:8px 0;justify-content:flex-start"><div class="spin"></div> Enrolling...</div>`;
     try{
       const r = await Api.enrolStudents({ courseId, sessionId, section });
@@ -1040,7 +1049,7 @@ const AdminView={
   },
 
   async _togUser(id,cb){const v=cb.checked;try{await Api.updateUser(id,{isActive:v});toast('User '+(v?'activated':'deactivated'))}catch(e){cb.checked=!v;toast(e.message,'err')}},
-  _bulkUpload(){showModal('Bulk Upload Users',`<div class="alert alert-info mb3"><span class="alert-icon">i</span>Upload CSV or Excel. Required columns:<br><strong>firstName, lastName, email, role, institutionalId, section</strong><br>Role: STUDENT / FACULTY / ADMIN &nbsp;|&nbsp; Section: A or B (students only)<br>Student password defaults to institutionalId. The whole file joins the batch you pick below.</div>
+  _bulkUpload(){showModal('Bulk Upload Users',`<div class="alert alert-info mb3"><span class="alert-icon">i</span>Upload CSV or Excel. Required columns:<br><strong>firstName, lastName, email, role, institutionalId, section</strong><br>Role: STUDENT / FACULTY / ADMIN &nbsp;|&nbsp; Section: A or B (students only)<br>Student password defaults to institutionalId. The whole file joins the batch you pick below.<br>Re-uploading updates existing users (name, roll, section, batch). Passwords and roles are never changed.</div>
     <div class="form-row fr2 mb3">
       <div class="fg"><label>Department (for students)</label><select id="bulk-dept" onchange="AdminView._bulkFillBatches()"><option value="">Loading...</option></select></div>
       <div class="fg"><label>Batch (for students)</label><select id="bulk-batch"><option value="">-- Select department first --</option></select></div>
@@ -1055,7 +1064,7 @@ const AdminView={
     const preview=document.getElementById('bulk-preview');preview.innerHTML='<div class="loading-box" style="padding:10px 0"><div class="spin"></div> Reading...</div>';
     try{
       let users=[];const mapRow=r=>({firstName:String(r.firstName||r['First Name']||r.firstname||'').trim(),lastName:String(r.lastName||r['Last Name']||r.lastname||'').trim(),email:String(r.email||r.Email||'').trim(),role:String(r.role||r.Role||'STUDENT').toUpperCase().trim(),institutionalId:String(r.institutionalId||r['Institutional ID']||r.institutionalid||'').trim(),section:(String(r.section||r.Section||'').trim().toUpperCase()||null)});
-      if(file.name.endsWith('.csv')){const text=await file.text();const ls=text.trim().split('\n');const headers=ls[0].split(',').map(h=>h.trim().replace(/^"|"$/g,'').toLowerCase());users=ls.slice(1).filter(l=>l.trim()).map(line=>{const vals=line.split(',').map(v=>v.trim().replace(/^"|"$/g,''));const obj={};headers.forEach((h,i)=>obj[h]=vals[i]||'');return mapRow({firstName:obj.firstname||obj['first name'],lastName:obj.lastname||obj['last name'],email:obj.email,role:obj.role,institutionalId:obj.institutionalid||obj['institutional id']});});}
+      if(file.name.endsWith('.csv')){const text=await file.text();const ls=text.trim().split('\n');const headers=ls[0].split(',').map(h=>h.trim().replace(/^"|"$/g,'').toLowerCase());users=ls.slice(1).filter(l=>l.trim()).map(line=>{const vals=line.split(',').map(v=>v.trim().replace(/^"|"$/g,''));const obj={};headers.forEach((h,i)=>obj[h]=vals[i]||'');return mapRow({firstName:obj.firstname||obj['first name'],lastName:obj.lastname||obj['last name'],email:obj.email,role:obj.role,institutionalId:obj.institutionalid||obj['institutional id'],section:obj.section});});}
       else{const ab=await file.arrayBuffer();const XLSX=await import('https://cdn.sheetjs.com/xlsx-0.20.0/package/xlsx.mjs');const wb=XLSX.read(ab);users=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''}).map(mapRow);}
       if(!users.length){preview.innerHTML='<div class="alert alert-warn">No data found.</div>';return;}
       const _bn=(AdminView._bulkSessions||[]).find(s=>s.id===document.getElementById('bulk-batch')?.value);const _bl=_bn?_bn.name:'(set on upload)';
@@ -1065,7 +1074,7 @@ const AdminView={
   },
   async _confirmBulk(){const users=window._bulkUsers;if(!users||!users.length)return toast('Parse a file first','err');
     const sessionId=document.getElementById('bulk-batch')?.value||null;
-    try{const res=await Api.bulkCreateUsers(users,sessionId);toast('Created: '+res.created+', Skipped: '+res.skipped+(res.errors.length?', Errors: '+res.errors.length:''),'ok');closeModal();window._bulkUsers=null;this._loadU();}catch(e){toast(e.message,'err');}},
+    try{const res=await Api.bulkCreateUsers(users,sessionId);toast('Created: '+res.created+', Updated: '+(res.updated||0)+(res.skipped?', Skipped: '+res.skipped:'')+(res.errors.length?', Errors: '+res.errors.length:''),'ok');closeModal();window._bulkUsers=null;this._loadU();}catch(e){toast(e.message,'err');}},
   _addUser(forceRole) {
     const roleLabel = forceRole === 'ADMIN' ? 'Admin' : forceRole === 'FACULTY' ? 'Faculty' : 'Student';
     const isStudent = forceRole === 'STUDENT' || !forceRole;

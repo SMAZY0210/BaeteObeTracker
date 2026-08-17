@@ -429,13 +429,16 @@ const getUsers = async (req, res, next) => {
     // students and the roll numbers overlap enough that picking the wrong
     // person is easy. Requiring department AND batch (or a direct search on a
     // roll number or email) narrows it to a group the admin can actually scan.
+    // Any one filter narrows the list. Requiring two meant a department could
+    // not be browsed on its own, which is the first thing anyone tries.
+    // Unfiltered is still refused, because returning every student in the
+    // institution is slow and useless rather than helpful.
     if (role === 'STUDENT' && !search) {
       const filters = [departmentId, sessionId, batchYear, section].filter(Boolean).length;
-      if (filters < 2) {
+      if (filters < 1) {
         return res.status(400).json({
           status: 'error',
-          error: 'Narrow the search first. Pick a department and a batch, or search by roll number or email.',
-          need: { given: filters, required: 2 },
+          error: 'Pick a department, a batch or a section, or search by roll number or email.',
           accepts: ['departmentId', 'sessionId', 'batchYear', 'section', 'search'],
         });
       }
@@ -989,7 +992,7 @@ const bulkCreateUsers = async (req, res, next) => {
       return res.status(400).json({ status: 'error', error: 'No users provided' });
     }
     const bcrypt = require('bcrypt');
-    const results = { created: 0, skipped: 0, errors: [] };
+    const results = { created: 0, updated: 0, skipped: 0, errors: [] };
 
     for (const u of users) {
       try {
@@ -1003,8 +1006,30 @@ const bulkCreateUsers = async (req, res, next) => {
         const existing = await prisma.user.findFirst({
           where: { email: { equals: u.email.trim(), mode: 'insensitive' } },
         });
-        if (existing) { results.skipped++; continue; }
         const isStudent = u.role.toUpperCase() === 'STUDENT';
+
+        if (existing) {
+          // Update rather than skip. Re-uploading a corrected sheet used to do
+          // nothing at all, so a section fixed in the file never reached the
+          // system and had to be set by hand for every student.
+          //
+          // Password and role are never touched. A re-upload should not reset
+          // someone's password to their roll number, and it should not silently
+          // promote or demote anyone.
+          await prisma.user.update({
+            where: { id: existing.id },
+            data: {
+              firstName: u.firstName.trim(),
+              lastName: u.lastName.trim(),
+              institutionalId: u.institutionalId?.trim() || existing.institutionalId,
+              section: u.section?.trim() || existing.section,
+              ...(isStudent && sessionId ? { sessionId } : {}),
+            },
+          });
+          results.updated = (results.updated || 0) + 1;
+          continue;
+        }
+
         await prisma.user.create({
           data: {
             institutionId: req.user.institutionId,
@@ -1265,12 +1290,42 @@ const enrolStudents = async (req, res, next) => {
         select: { id: true },
       });
     } else {
-      // Batch enrolment. Match on the session (batch) link. Only active
-      // students can be enrolled; a dropped student is inactive and skipped.
+      // Batch enrolment.
+      //
+      // The batch scope is mandatory. Previously, if sessionId arrived empty the
+      // query fell through to { role: STUDENT, isActive: true } plus an optional
+      // section, which matches every student in the institution. Choosing "Batch
+      // 2026, all sections" then enrolled section A of every other batch as
+      // well, because nothing in the query mentioned 2026 at all.
+      if (!sessionId && !batchYear) {
+        return res.status(400).json({
+          status: 'error',
+          error: 'Pick a batch. Enrolling without one would match every student in the institution.',
+        });
+      }
+
       const where = { role: 'STUDENT', deletedAt: null, isActive: true };
-      if (sessionId) where.sessionId = sessionId;
-      else if (batchYear) where.institutionalId = { startsWith: String(batchYear).slice(-2) };
+      if (sessionId) {
+        where.sessionId = sessionId;
+      } else {
+        // batchYear is a fallback for callers that only know the year. Match the
+        // session by name rather than by slicing digits off the roll number,
+        // which assumed a roll format that does not hold: a 2026 batch was
+        // matched with startsWith "26" against roll numbers beginning "23".
+        const sessions = await prisma.session.findMany({
+          where: {
+            institutionId: req.user.institutionId,
+            name: { contains: String(batchYear), mode: 'insensitive' },
+          },
+          select: { id: true },
+        });
+        if (!sessions.length) {
+          return res.status(400).json({ status: 'error', error: `No batch matching "${batchYear}" found.` });
+        }
+        where.sessionId = { in: sessions.map((x) => x.id) };
+      }
       if (section) where.section = section;
+
       students = await prisma.user.findMany({ where, select: { id: true } });
     }
 
