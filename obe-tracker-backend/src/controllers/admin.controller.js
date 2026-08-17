@@ -949,7 +949,12 @@ const getAttainmentReport = async (req, res, next) => {
         attained: 0, total: 0,
       };
       coMap[key].total++;
-      if (r.level === 'L3') coMap[key].attained++;
+      // `attained` is the stored threshold decision. `level` is a display band
+      // where L3 starts at 80 percent, so counting L3 as "attained" reported
+      // every student between the 60 percent threshold and 80 percent as a
+      // failure. A student at 70 percent showed as not attained on this report
+      // while their individual report showed the outcome met.
+      if (r.attained != null ? r.attained : r.level === 'L3') coMap[key].attained++;
     });
 
     const poMap = {};
@@ -961,7 +966,7 @@ const getAttainmentReport = async (req, res, next) => {
         attained: 0, total: 0,
       };
       poMap[key].total++;
-      if (r.level === 'L3') poMap[key].attained++;
+      if (r.attained != null ? r.attained : r.level === 'L3') poMap[key].attained++;
     });
 
     const coSummary = Object.values(coMap).map(v => ({

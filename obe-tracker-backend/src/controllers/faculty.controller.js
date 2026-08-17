@@ -879,13 +879,16 @@ const getCourseAttainment = async (req, res, next) => {
     coRaw.forEach(r => {
       if (!coMap[r.courseOutcomeId]) coMap[r.courseOutcomeId] = { co: r.courseOutcome, attained: 0, total: 0 };
       coMap[r.courseOutcomeId].total++;
-      if (r.level === 'L3') coMap[r.courseOutcomeId].attained++;
+      // `attained` is the stored threshold decision. `level` is a display band
+      // starting at 80 percent, so counting L3 reported every student between
+      // the 60 percent threshold and 80 percent as a failure.
+      if (r.attained != null ? r.attained : r.level === 'L3') coMap[r.courseOutcomeId].attained++;
     });
     const poMap = {};
     poRaw.forEach(r => {
       if (!poMap[r.programOutcomeId]) poMap[r.programOutcomeId] = { po: r.programOutcome, attained: 0, total: 0 };
       poMap[r.programOutcomeId].total++;
-      if (r.level === 'L3') poMap[r.programOutcomeId].attained++;
+      if (r.attained != null ? r.attained : r.level === 'L3') poMap[r.programOutcomeId].attained++;
     });
 
     const coSummary = Object.values(coMap).map(({ co, attained, total }) => ({

@@ -360,14 +360,17 @@ const FacultyView = {
         '</div>';
 
       const coRows = (d.coAttainments||[]).map(r => {
-        const att = r.level === 'L3';
+        // The stored decision, not the display band. A student at 70 percent is
+        // L2 and was rendered "Not Attained" beside a 70.0% score and a Pass on
+        // the assessment row that produced it.
+        const att = r.attained != null ? r.attained : r.level === 'L3';
         return '<tr><td><span class="badge bg-green">' + r.courseOutcome.code + '</span></td>' +
           '<td>' + r.courseOutcome.title + '</td>' +
           '<td style="text-align:center"><span class="badge ' + (att?'bg-green':'bg-red') + '">' + (att?'Attained':'Not Attained') + '</span></td>' +
           '<td style="text-align:right;font-weight:700;color:' + (att?'var(--l3)':'var(--l0)') + '">' + r.percentage.toFixed(1) + '%</td></tr>';
       }).join('');
       const poRows = (d.poAttainments||[]).map(r => {
-        const att = r.level === 'L3';
+        const att = r.attained != null ? r.attained : r.level === 'L3';
         return '<tr><td><span class="badge bg-blue">' + r.programOutcome.code + '</span></td>' +
           '<td>' + r.programOutcome.title + '</td>' +
           '<td style="text-align:center"><span class="badge ' + (att?'bg-green':'bg-red') + '">' + (att?'Attained':'Not Attained') + '</span></td>' +
@@ -1089,9 +1092,9 @@ const FacultyView = {
     const rows=[
       ['Student', (stu.firstName||'')+' '+(stu.lastName||'')], ['ID', stu.institutionalId||''], ['',''],
       ['Type','Code','Title','Result','Score (%)'],
-      ...(d.poAttainments||[]).map(r=>['PO',r.programOutcome.code,r.programOutcome.title,r.level==='L3'?'Attained':'Not Attained',r.percentage.toFixed(1)]),
+      ...(d.poAttainments||[]).map(r=>['PO',r.programOutcome.code,r.programOutcome.title,(r.attained != null ? r.attained : r.level==='L3')?'Attained':'Not Attained',r.percentage.toFixed(1)]),
       ['','','','',''],
-      ...(d.coAttainments||[]).map(r=>['CO',r.courseOutcome.code,r.courseOutcome.title,r.level==='L3'?'Attained':'Not Attained',r.percentage.toFixed(1)]),
+      ...(d.coAttainments||[]).map(r=>['CO',r.courseOutcome.code,r.courseOutcome.title,(r.attained != null ? r.attained : r.level==='L3')?'Attained':'Not Attained',r.percentage.toFixed(1)]),
     ];
     const csv=rows.map(r=>r.map(v=>'"'+String(v||'').replace(/"/g,'""')+'"').join(',')).join('\n');
     const a=document.createElement('a');
@@ -1105,8 +1108,8 @@ const FacultyView = {
     const name=(stu.firstName||'')+' '+(stu.lastName||'');
     const batch=stu.session?.name || (stu.institutionalId?'Batch 20'+stu.institutionalId.substring(0,2):'--');
     const win=window.open('','_blank');
-    const poRows=(d.poAttainments||[]).map(r=>{const att=r.level==='L3';return`<tr><td><b>${r.programOutcome.code}</b></td><td>${r.programOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
-    const coRows=(d.coAttainments||[]).map(r=>{const att=r.level==='L3';return`<tr><td><b>${r.courseOutcome.code}</b></td><td>${r.courseOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
+    const poRows=(d.poAttainments||[]).map(r=>{const att=r.attained != null ? r.attained : r.level==='L3';return`<tr><td><b>${r.programOutcome.code}</b></td><td>${r.programOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
+    const coRows=(d.coAttainments||[]).map(r=>{const att=r.attained != null ? r.attained : r.level==='L3';return`<tr><td><b>${r.courseOutcome.code}</b></td><td>${r.courseOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
     const assRows=(d.assessmentDetail||[]).map(a=>`<tr><td>${a.title}</td><td style="text-align:center">${a.totalMarks}</td><td style="text-align:center">${a.attainmentMark}</td><td style="text-align:center;font-weight:700">${a.marksObtained!=null?a.marksObtained:'-'}</td><td style="text-align:center;color:${a.passed?'#16a34a':'#dc2626'}">${a.marksObtained!=null?(a.passed?'Pass':'Fail'):'-'}</td></tr>`).join('');
     win.document.write(`<!DOCTYPE html><html><head><title>Attainment - ${name}</title><style>
       body{font-family:Arial,sans-serif;padding:30px;color:#222}
