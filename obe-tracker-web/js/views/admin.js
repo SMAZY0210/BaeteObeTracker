@@ -1258,23 +1258,37 @@ const AdminView={
     document.getElementById('view-root').innerHTML=`<div class="page-hd"><div class="page-hd-left"><h1>Attainment Report</h1><div class="hd-sub">CO/PO attainment by batch and department</div></div></div>${loading()}`;
     try{
       const [sessions,depts,progs]=await Promise.all([Api.getSessions(),Api.getDepartments(),Api.getPrograms()]);
+      AdminView._arData = { sessions, progs };
       document.getElementById('view-root').innerHTML=`
         <div class="page-hd"><div class="page-hd-left"><h1>Attainment Report</h1><div class="hd-sub">Cohort figures by program, and individual student reports</div></div></div>
 
         <div class="card mb4"><div class="card-bd">
           <div class="sec-title mb3">Group Attainment</div>
+
+          <!-- Cascading, because the data is: a program belongs to a department
+               and a batch is assessed against one program's curriculum version.
+               Three independent dropdowns let you pick a department and a
+               program from a different one, which returns an empty report and
+               no explanation of why. -->
           <div class="filter-bar" style="margin-bottom:0">
-            <div class="fg" style="flex:1;margin:0"><label>Program <span style="color:var(--l0)">*</span></label>
-              <select id="ar-prog"><option value="">Select Program</option>${progs.map(p=>`<option value="${p.id}" data-dept="${p.departmentId||''}">${esc(p.code)} - ${esc(p.name)}</option>`).join('')}</select></div>
-            <div class="fg" style="flex:1;margin:0"><label>Batch / Session</label>
-              <select id="ar-sess"><option value="">All batches</option>${sessions.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
-            <div class="fg" style="flex:1;margin:0"><label>Department</label>
-              <select id="ar-dept"><option value="">All departments</option>${depts.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
+            <div class="fg" style="flex:1;margin:0"><label>1. Department <span style="color:var(--l0)">*</span></label>
+              <select id="ar-dept" onchange="AdminView._arDeptChanged()">
+                <option value="">Select Department</option>
+                ${depts.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}
+              </select></div>
+            <div class="fg" style="flex:1;margin:0"><label>2. Program <span style="color:var(--l0)">*</span></label>
+              <select id="ar-prog" disabled onchange="AdminView._arProgChanged()">
+                <option value="">Select department first</option>
+              </select></div>
+            <div class="fg" style="flex:1;margin:0"><label>3. Batch <span style="color:var(--l0)">*</span></label>
+              <select id="ar-sess" disabled onchange="AdminView._arSessChanged()">
+                <option value="">Select program first</option>
+              </select></div>
             <div style="padding-top:22px">
-              <button class="btn btn-primary" onclick="AdminView._loadAttainReport()">${ico('chart')} View Report</button>
+              <button class="btn btn-primary" id="ar-go" disabled onclick="AdminView._loadAttainReport()">${ico('chart')} View Report</button>
             </div>
           </div>
-          <p class="text-sm text-muted mt2">A program is required. Outcome codes mean different things in different programs, so a figure aggregated across them would not describe anything.</p>
+          <p class="text-sm text-muted mt2">All three are required. Outcome codes are only unique within a program's curriculum version, and each batch is assessed against one version, so a figure spanning programs or batches would not describe a single cohort.</p>
         </div></div>
         <div id="ar-result"></div>
 
@@ -1295,6 +1309,62 @@ const AdminView={
           <div id="ar-stu-result" class="mt3"></div>
         </div></div>`;
     }catch(e){document.getElementById('view-root').innerHTML+=`<div class="alert alert-error"><span class="alert-icon">&#9888;</span>${e.message}</div>`}
+  },
+
+  // ── Attainment filter cascade ────────────────────────────────
+  _arDeptChanged(){
+    const deptId = document.getElementById('ar-dept').value;
+    const progSel = document.getElementById('ar-prog');
+    const sessSel = document.getElementById('ar-sess');
+    const progs = (AdminView._arData?.progs || []).filter(p => p.departmentId === deptId);
+
+    if(!deptId){
+      progSel.innerHTML = '<option value="">Select department first</option>';
+      progSel.disabled = true;
+    } else if(!progs.length){
+      progSel.innerHTML = '<option value="">No programs in this department</option>';
+      progSel.disabled = true;
+    } else {
+      progSel.innerHTML = '<option value="">Select Program</option>' +
+        progs.map(p=>`<option value="${p.id}">${esc(p.code)} - ${esc(p.name)}</option>`).join('');
+      progSel.disabled = false;
+    }
+
+    sessSel.innerHTML = '<option value="">Select program first</option>';
+    sessSel.disabled = true;
+    AdminView._arSessChanged();
+  },
+
+  _arProgChanged(){
+    const deptId = document.getElementById('ar-dept').value;
+    const progId = document.getElementById('ar-prog').value;
+    const sessSel = document.getElementById('ar-sess');
+
+    // Batches belong to a department, so scope by that rather than by program.
+    const sessions = (AdminView._arData?.sessions || []).filter(
+      s => (s.departmentId || s.department?.id) === deptId
+    );
+
+    if(!progId){
+      sessSel.innerHTML = '<option value="">Select program first</option>';
+      sessSel.disabled = true;
+    } else if(!sessions.length){
+      sessSel.innerHTML = '<option value="">No batches in this department</option>';
+      sessSel.disabled = true;
+    } else {
+      sessSel.innerHTML = '<option value="">Select Batch</option>' +
+        sessions.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
+      sessSel.disabled = false;
+    }
+    AdminView._arSessChanged();
+  },
+
+  _arSessChanged(){
+    const btn = document.getElementById('ar-go');
+    if(!btn) return;
+    btn.disabled = !(document.getElementById('ar-dept').value &&
+                     document.getElementById('ar-prog').value &&
+                     document.getElementById('ar-sess').value);
   },
 
   // Individual lookup, separate from the cohort filters entirely.
@@ -1318,16 +1388,14 @@ const AdminView={
     const deptId=document.getElementById('ar-dept').value;
     const el=document.getElementById('ar-result');
 
-    if(!progId){
-      el.innerHTML='<div class="alert alert-warn"><span class="alert-icon">!</span>Select a program first. PO1 in one program is not PO1 in another, so a figure spanning programs would be meaningless.</div>';
+    if(!deptId || !progId || !sessId){
+      el.innerHTML='<div class="alert alert-warn"><span class="alert-icon">!</span>Pick a department, then a program, then a batch. PO1 in one program is not PO1 in another, and each batch is assessed against its own curriculum version.</div>';
       return;
     }
 
     el.innerHTML=loading();
     try{
-      const filters={ programId: progId };
-      if(sessId) filters.sessionId=sessId;
-      if(deptId) filters.departmentId=deptId;
+      const filters={ departmentId: deptId, programId: progId, sessionId: sessId };
 
       const{coSummary,poSummary}=await Api.getAttainmentReport(filters);
       if(!coSummary.length&&!poSummary.length){
