@@ -1335,10 +1335,6 @@ const AdminView={
         return;
       }
 
-      // Build a map: poCode -> list of contributing COs
-      const poCoMap={};
-      poSummary.forEach(po=>{ poCoMap[po.poCode]=coSummary.filter(co=>co.poCode===po.poCode||true); });
-
       el.innerHTML=`
         <div class="flex-between mb3">
           <div class="sec-title">Program Outcome Attainment</div>
@@ -1351,13 +1347,13 @@ const AdminView={
           <thead><tr><th>PO</th><th>Title</th>
             <th style="text-align:center">Attained</th><th style="text-align:center">Total</th>
             <th style="min-width:160px">Rate</th><th style="text-align:center">Details</th></tr></thead>
-          <tbody>${poSummary.map(r=>{const lvl=r.attainmentRate>=60;const relCOs=coSummary.filter(co=>co.poCode===r.poCode);return`<tr>
+          <tbody>${poSummary.map(r=>{const lvl=r.attainmentRate>=60;const nCos=coSummary.filter(co=>(co.mappedPoIds||[]).includes(r.programOutcomeId)).length;return`<tr>
             <td><span class="badge bg-blue">${r.poCode||'?'}</span></td>
             <td>${r.poTitle||'?'}</td>
             <td style="text-align:center;font-weight:700;color:var(--l3)">${r.attained||0}</td>
             <td style="text-align:center;color:var(--text3)">${r.total||0}</td>
             <td>${attBar(r.attainmentRate||0,lvl)}</td>
-            <td style="text-align:center"><button class="btn btn-ghost btn-xs" onclick="AdminView._togglePODetail('po-det-${r.poCode}')">Show COs</button></td>
+            <td style="text-align:center"><button class="btn btn-ghost btn-xs" onclick="AdminView._togglePODetail('po-det-${r.poCode}')">${nCos} CO${nCos===1?'':'s'}</button></td>
           </tr>
           <tr id="po-det-${r.poCode}" style="display:none"><td colspan="6" style="padding:0;background:var(--surface2)">
             <div style="padding:12px 20px">
@@ -1373,20 +1369,12 @@ const AdminView={
           </td></tr>`}).join('')}
           </tbody>
         </table></div>
-        <div class="sec-title mb3">Course Outcome Attainment</div>
-        <div class="tbl-wrap mb4"><table>
-          <thead><tr><th>Course</th><th>CO</th><th>Title</th>
-            <th style="text-align:center">Attained</th><th style="text-align:center">Total</th>
-            <th style="min-width:160px">Rate</th></tr></thead>
-          <tbody>${coSummary.map(r=>{const lvl=r.attainmentRate>=60;return`<tr>
-            <td><span class="code-badge">${r.courseCode}</span></td>
-            <td><span class="badge bg-green">${r.coCode||'?'}</span></td>
-            <td>${r.coTitle||'?'}</td>
-            <td style="text-align:center;font-weight:700;color:var(--l3)">${r.attained||0}</td>
-            <td style="text-align:center;color:var(--text3)">${r.total||0}</td>
-            <td>${attBar(r.attainmentRate||0,lvl)}</td>
-          </tr>`}).join('')}</tbody>
-        </table></div>`;
+        <p class="text-sm text-muted">Expand a row to see the course outcomes feeding it. A CO figure on its own says nothing about whether the programme outcome was met, which is the question this report exists to answer.</p>`;
+
+        // The standalone Course Outcome table used to sit here. Every CO already
+        // appears inside the PO it contributes to, the same shape the individual
+        // report uses, and repeating them below invited the two lists to be read
+        // as separate findings when one is simply a component of the other.
       this._lastReport={coSummary,poSummary};
     }catch(e){el.innerHTML=`<div class="alert alert-error"><span class="alert-icon">&#9888;</span>${e.message}</div>`}
   },

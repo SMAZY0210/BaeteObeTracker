@@ -70,6 +70,7 @@ const tdEmpty=(m,n=6)=>`<tr><td colspan="${n}" class="td-load text-muted">${m}</
 
 // attained is a boolean, formerly an L0..L3 band string.
 function levelBadge(attained,pct){
+  if (typeof attained === 'string') attained = attained === 'L3';
   const cls  = attained ? 'bg-green' : 'bg-red';
   const lbl  = attained ? 'Attained' : 'Not Attained';
   const disp = pct !== undefined ? `${pct.toFixed(1)}%` : lbl;
@@ -78,7 +79,13 @@ function levelBadge(attained,pct){
 
 // attained is a boolean. It used to be an L0..L3 band string, which invited the
 // same confusion that had "L3" acting as the pass test in six other places.
+//
+// The string form is still accepted, because a cached copy of this file paired
+// with an updated caller (or the reverse) would otherwise paint every bar red:
+// `true === 'L3'` is false, so a 100 percent row rendered as a failure.
 function attBar(pct,attained){
+  if (typeof attained === 'string') attained = attained === 'L3';
+  if (attained == null) attained = pct >= 60;
   const c = attained ? 'var(--l3)' : 'var(--l0)';
   const threshold = 60; // 60% threshold line
   return`<div class="att-row">
