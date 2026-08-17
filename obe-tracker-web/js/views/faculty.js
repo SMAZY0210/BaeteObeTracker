@@ -858,7 +858,7 @@ const FacultyView = {
               <td>${po.title}</td>
               <td style="text-align:center;font-weight:700;color:var(--l3)">${po.attainedCount}</td>
               <td style="text-align:center;color:var(--text3)">${po.totalStudents}</td>
-              <td>${attBar(po.attainmentRate, lvl)}</td>
+              <td>${attBar(po.attainmentRate, po.attainmentRate >= 60)}</td>
             </tr>`;
           }).join('')}</tbody>
         </table></div>
@@ -877,7 +877,7 @@ const FacultyView = {
               <td>${co.title}</td>
               <td style="text-align:center;font-weight:700;color:var(--l3)">${co.attainedCount}</td>
               <td style="text-align:center;color:var(--text3)">${co.totalStudents}</td>
-              <td>${attBar(co.attainmentRate, lvl)}</td>
+              <td>${attBar(co.attainmentRate, co.attainmentRate >= 60)}</td>
             </tr>`;
           }).join('')}</tbody>
         </table></div>
