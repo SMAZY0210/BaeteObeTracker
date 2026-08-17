@@ -59,10 +59,9 @@ const createPolicy = async (req, res, next) => {
       label, rationale, approvedBy, effectiveFrom,
       coStudentThreshold, coCohortThreshold,
       poStudentThreshold, poCohortThreshold,
-      l3Min, l2Min, l1Min,
     } = req.body;
 
-    const pcts = { coStudentThreshold, coCohortThreshold, poStudentThreshold, poCohortThreshold, l3Min, l2Min, l1Min };
+    const pcts = { coStudentThreshold, coCohortThreshold, poStudentThreshold, poCohortThreshold };
     for (const [k, v] of Object.entries(pcts)) {
       if (v == null) continue;
       if (typeof v !== 'number' || v < 0 || v > 100) {
@@ -70,16 +69,11 @@ const createPolicy = async (req, res, next) => {
       }
     }
 
-    if (l1Min != null && l2Min != null && l3Min != null && !(l1Min < l2Min && l2Min < l3Min)) {
-      return res.status(400).json({ status: 'error', error: 'Bands must increase: l1Min < l2Min < l3Min' });
-    }
-
     const policy = await createPolicyVersion(
       programId,
       {
         label, rationale, effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : undefined,
         coStudentThreshold, coCohortThreshold, poStudentThreshold, poCohortThreshold,
-        l3Min, l2Min, l1Min,
       },
       approvedBy
     );

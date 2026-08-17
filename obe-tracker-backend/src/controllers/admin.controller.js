@@ -321,7 +321,6 @@ const updateSession = async (req, res, next) => {
           coCohortThreshold: p.coCohortThreshold,
           poStudentThreshold: p.poStudentThreshold,
           poCohortThreshold: p.poCohortThreshold,
-          l3Min: p.l3Min, l2Min: p.l2Min, l1Min: p.l1Min,
           frozenAt: new Date().toISOString(),
         };
       }
@@ -967,7 +966,7 @@ const getAttainmentReport = async (req, res, next) => {
       // every student between the 60 percent threshold and 80 percent as a
       // failure. A student at 70 percent showed as not attained on this report
       // while their individual report showed the outcome met.
-      if (r.attained != null ? r.attained : r.level === 'L3') coMap[key].attained++;
+      if (r.attained) coMap[key].attained++;
     });
 
     const poMap = {};
@@ -979,7 +978,7 @@ const getAttainmentReport = async (req, res, next) => {
         attained: 0, total: 0,
       };
       poMap[key].total++;
-      if (r.attained != null ? r.attained : r.level === 'L3') poMap[key].attained++;
+      if (r.attained) poMap[key].attained++;
     });
 
     const coSummary = Object.values(coMap).map(v => ({
@@ -1223,7 +1222,6 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
         // not support.
         assessed: !!overall,
         attained: overall ? overall.attained : false,
-        level: overall ? overall.level : 'L0',
         policyVersion: rowsForPo[0]?.policyVersion ?? null,
         breakdown: {
           contributors: contributors.map((c) => ({

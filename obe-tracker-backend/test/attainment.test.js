@@ -15,7 +15,6 @@ const {
   computeCourseCoAttainment,
   computeStudentPoAttainment,
   computeCohortPoAttainment,
-  levelFor,
   DEFAULT_POLICY,
 } = require('../src/utils/attainment');
 
@@ -25,7 +24,6 @@ const policy = {
   coCohortThreshold: 60,
   poStudentThreshold: 60,
   poCohortThreshold: 60,
-  l3Min: 80, l2Min: 70, l1Min: 60,
 };
 
 const co1 = { id: 'co1' };
@@ -84,13 +82,6 @@ test('absent is excluded, not scored zero', () => {
   assert.equal(tier2.attainmentPct, 50);
 });
 
-test('all four attainment levels are reachable', () => {
-  assert.equal(levelFor(85, policy), 'L3');
-  assert.equal(levelFor(72, policy), 'L2');
-  assert.equal(levelFor(63, policy), 'L1');
-  assert.equal(levelFor(41, policy), 'L0');
-});
-
 test('PO attainment is correlation-weighted, not a raw mark sum', () => {
   const assessments = fixture();
   const mappings = [
@@ -143,7 +134,6 @@ test('mark scale does not decide the PO figure', () => {
   const a = computeStudentCoAttainment({ studentId: 's', courseOutcome: co1, assessments: small, policy });
   const b = computeStudentCoAttainment({ studentId: 's', courseOutcome: co1, assessments: large, policy });
   assert.equal(a.percentage, b.percentage, '80% is 80% at any scale');
-  assert.equal(a.level, b.level);
 });
 
 test('explicit attainmentMark overrides the policy percentage', () => {

@@ -68,18 +68,17 @@ const loading=()=>`<div class="loading-box"><div class="spin"></div> Loading…<
 const tdLoad=(n=6)=>`<tr><td colspan="${n}" class="td-load"><div class="spin" style="display:inline-block"></div></td></tr>`;
 const tdEmpty=(m,n=6)=>`<tr><td colspan="${n}" class="td-load text-muted">${m}</td></tr>`;
 
-function levelBadge(lvl,pct){
-  // Binary model: L3 = Attained, L0 = Not Attained
-  const attained = lvl === 'L3';
+// attained is a boolean, formerly an L0..L3 band string.
+function levelBadge(attained,pct){
   const cls  = attained ? 'bg-green' : 'bg-red';
   const lbl  = attained ? 'Attained' : 'Not Attained';
   const disp = pct !== undefined ? `${pct.toFixed(1)}%` : lbl;
   return `<span class="badge ${cls}">${disp} - ${lbl}</span>`;
 }
 
-function attBar(pct,lvl){
-  // Binary: green bar if attained, red bar if not
-  const attained = lvl === 'L3';
+// attained is a boolean. It used to be an L0..L3 band string, which invited the
+// same confusion that had "L3" acting as the pass test in six other places.
+function attBar(pct,attained){
   const c = attained ? 'var(--l3)' : 'var(--l0)';
   const threshold = 60; // 60% threshold line
   return`<div class="att-row">

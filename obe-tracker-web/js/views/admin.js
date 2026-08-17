@@ -1351,7 +1351,7 @@ const AdminView={
           <thead><tr><th>PO</th><th>Title</th>
             <th style="text-align:center">Attained</th><th style="text-align:center">Total</th>
             <th style="min-width:160px">Rate</th><th style="text-align:center">Details</th></tr></thead>
-          <tbody>${poSummary.map(r=>{const lvl=r.attainmentRate>=60?'L3':'L0';const relCOs=coSummary.filter(co=>co.poCode===r.poCode);return`<tr>
+          <tbody>${poSummary.map(r=>{const lvl=r.attainmentRate>=60;const relCOs=coSummary.filter(co=>co.poCode===r.poCode);return`<tr>
             <td><span class="badge bg-blue">${r.poCode||'?'}</span></td>
             <td>${r.poTitle||'?'}</td>
             <td style="text-align:center;font-weight:700;color:var(--l3)">${r.attained||0}</td>
@@ -1366,7 +1366,7 @@ const AdminView={
                 const relCOs=coSummary.filter(co=>(co.mappedPoIds||[]).includes(r.programOutcomeId));
                 if(!relCOs.length) return '<p class="text-sm text-muted">No mapped COs found.</p>';
                 return '<table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="border-bottom:1px solid var(--border)"><th style="padding:6px 10px;text-align:left">Course</th><th style="padding:6px 10px;text-align:left">CO</th><th style="padding:6px 10px;text-align:left">Title</th><th style="padding:6px 10px;text-align:center">Attained</th><th style="padding:6px 10px;text-align:center">Total</th><th style="padding:6px 10px;min-width:140px">Rate</th></tr></thead><tbody>'+
-                  relCOs.map(co=>{const cl=co.attainmentRate>=60?'L3':'L0';return'<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><span class="code-badge">'+( co.courseCode||'-')+'</span></td><td style="padding:6px 10px"><span class="badge bg-green">'+(co.coCode||'?')+'</span></td><td style="padding:6px 10px">'+(co.coTitle||'?')+'</td><td style="padding:6px 10px;text-align:center;font-weight:700;color:var(--l3)">'+(co.attained||0)+'</td><td style="padding:6px 10px;text-align:center;color:var(--text3)">'+(co.total||0)+'</td><td style="padding:6px 10px">'+attBar(co.attainmentRate||0,cl)+'</td></tr>';}).join('')+
+                  relCOs.map(co=>{const cl=co.attainmentRate>=60;return'<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px 10px"><span class="code-badge">'+( co.courseCode||'-')+'</span></td><td style="padding:6px 10px"><span class="badge bg-green">'+(co.coCode||'?')+'</span></td><td style="padding:6px 10px">'+(co.coTitle||'?')+'</td><td style="padding:6px 10px;text-align:center;font-weight:700;color:var(--l3)">'+(co.attained||0)+'</td><td style="padding:6px 10px;text-align:center;color:var(--text3)">'+(co.total||0)+'</td><td style="padding:6px 10px">'+attBar(co.attainmentRate||0,cl)+'</td></tr>';}).join('')+
                   '</tbody></table>';
               })()}
             </div>
@@ -1378,7 +1378,7 @@ const AdminView={
           <thead><tr><th>Course</th><th>CO</th><th>Title</th>
             <th style="text-align:center">Attained</th><th style="text-align:center">Total</th>
             <th style="min-width:160px">Rate</th></tr></thead>
-          <tbody>${coSummary.map(r=>{const lvl=r.attainmentRate>=60?'L3':'L0';return`<tr>
+          <tbody>${coSummary.map(r=>{const lvl=r.attainmentRate>=60;return`<tr>
             <td><span class="code-badge">${r.courseCode}</span></td>
             <td><span class="badge bg-green">${r.coCode||'?'}</span></td>
             <td>${r.coTitle||'?'}</td>
@@ -1438,7 +1438,7 @@ const AdminView={
       } else {
         (d.poAttainments||[]).forEach(r => {
           const assessed = r.assessed != null ? r.assessed : r.percentage != null;
-          const att = assessed && (r.attained != null ? r.attained : r.level==='L3');
+          const att = assessed && (r.attained);
           const bd = r.breakdown || { contributors: [], countedCos: 0, unassessedCos: 0 };
           const rowId = 'stupo-' + r.programOutcomeId;
 
@@ -1522,7 +1522,7 @@ const AdminView={
       // truth and is the sort of thing that unravels at a visit.
       const rows     = d.poAttainments||[];
       const isAss    = r => (r.assessed != null ? r.assessed : r.percentage != null);
-      const attained = rows.filter(r=>isAss(r) && (r.attained != null ? r.attained : r.level==='L3')).length;
+      const attained = rows.filter(r=>isAss(r) && (r.attained)).length;
       const total    = rows.length;
       const unass    = rows.filter(r=>!isAss(r)).length;
       document.getElementById('modal-ft').innerHTML =
@@ -1542,7 +1542,7 @@ const AdminView={
       ...d.poAttainments.map(r=>{
         const ass=(r.assessed != null ? r.assessed : r.percentage != null);
         return ['PO',r.programOutcome.code,r.programOutcome.title,
-          !ass?'Not assessed':((r.attained != null ? r.attained : r.level==='L3')?'Attained':'Not Attained'),
+          !ass?'Not assessed':((r.attained)?'Attained':'Not Attained'),
           ass?AdminView._pct(r.percentage,''). replace('%',''):''];
       }),
       ['','','','',''],
@@ -1560,7 +1560,7 @@ const AdminView={
     const win=window.open('','_blank');
     const poRows=d.poAttainments.map(r=>{
       const ass=(r.assessed != null ? r.assessed : r.percentage != null);
-      const att=ass && (r.attained != null ? r.attained : r.level==='L3');
+      const att=ass && (r.attained);
       const col=!ass?'#6b7280':(att?'#16a34a':'#dc2626');
       const txt=!ass?'Not assessed':(att?'Attained':'Not Attained');
       return `<tr><td><b>${r.programOutcome.code}</b></td><td>${r.programOutcome.title}</td><td style="text-align:center;color:${col};font-weight:700">${txt}</td><td style="text-align:right">${AdminView._pct(r.percentage)}</td></tr>`;

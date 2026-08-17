@@ -43,25 +43,10 @@ const DEFAULT_POLICY = Object.freeze({
   coCohortThreshold: 60,
   poStudentThreshold: 60,
   poCohortThreshold: 60,
-  l3Min: 80,
-  l2Min: 70,
-  l1Min: 60,
 });
 
 function resolvePolicy(policy) {
   return policy ? { ...DEFAULT_POLICY, ...policy } : DEFAULT_POLICY;
-}
-
-/**
- * Graded band on top of the binary attained/not decision.
- * BAETE wants a yes or no; the bands are for the department's own CQI reading.
- */
-function levelFor(percentage, policy) {
-  const p = resolvePolicy(policy);
-  if (percentage >= p.l3Min) return 'L3';
-  if (percentage >= p.l2Min) return 'L2';
-  if (percentage >= p.l1Min) return 'L1';
-  return 'L0';
 }
 
 /**
@@ -156,7 +141,6 @@ function computeStudentCoAttainment({ studentId, courseOutcome, assessments, pol
     studentId,
     percentage: round2(percentage),
     attained,
-    level: levelFor(percentage, p),
     basis: useExplicit ? 'EXPLICIT_MARK' : 'POLICY_PCT',
     assessmentsCounted: counted,
     policyVersion: p.version,
@@ -239,7 +223,6 @@ function computeStudentPoAttainment({ studentId, programOutcomeId, mappings, coR
     studentId,
     percentage: round2(percentage),
     attained: percentage >= p.poStudentThreshold,
-    level: levelFor(percentage, p),
     contributingCos: contributing.length,
     breakdown: contributing,
     policyVersion: p.version,
@@ -324,7 +307,6 @@ module.exports = {
   CORRELATION_WEIGHT,
   DEFAULT_POLICY,
   resolvePolicy,
-  levelFor,
   computeStudentCoAttainment,
   computeCourseCoAttainment,
   computeStudentPoAttainment,

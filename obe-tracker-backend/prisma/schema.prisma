@@ -55,13 +55,6 @@ enum CorrelationValue {
   STRONG
 }
 
-enum AttainmentLevel {
-  L0
-  L1
-  L2
-  L3
-}
-
 enum SessionStatus {
   DRAFT
   ACTIVE
@@ -873,10 +866,10 @@ model ThresholdPolicy {
   poStudentThreshold Float @default(60)
   poCohortThreshold  Float @default(60)
 
-  // optional graded reporting on top of the binary decision
-  l3Min Float @default(80)
-  l2Min Float @default(70)
-  l1Min Float @default(60)
+  // No display bands. L0 to L3 came from the original codebase, appear nowhere
+  // in ACC-MAN-02 v3.0 or in BAETE's own training material, and were repeatedly
+  // mistaken in code for the pass decision, which silently raised the effective
+  // threshold from 60 percent to 80. Attainment is the boolean below.
 
   rationale  String   @db.Text // why these numbers; an evaluator will ask
   approvedBy String? // academic committee, minute reference
@@ -902,7 +895,6 @@ model CoAttainment {
   courseId        String
   percentage      Float
   attained        Boolean // [NEW] the tier-1 decision, stored not recomputed
-  level           AttainmentLevel
   policyVersion   Int // [CHANGED] which ThresholdPolicy produced this
   matrixVersion   Int
   computedAt      DateTime        @default(now())
@@ -942,7 +934,6 @@ model PoAttainment {
   courseId         String?         // [CHANGED] nullable: a PO rolls up across courses
   percentage       Float
   attained         Boolean
-  level            AttainmentLevel
   policyVersion    Int
   matrixVersion    Int
   computedAt       DateTime        @default(now())

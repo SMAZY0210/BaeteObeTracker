@@ -910,7 +910,6 @@ async function main() {
         coCohortThreshold: 60,
         poStudentThreshold: 60,
         poCohortThreshold: 60,
-        l3Min: 80, l2Min: 70, l1Min: 60,
         rationale:
           'PLACEHOLDER - not yet approved. Replace with the ICE academic committee ' +
           'minute recording why 60 percent was chosen for both the student and ' +
