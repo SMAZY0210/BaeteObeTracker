@@ -878,14 +878,27 @@ const getDashboard = async (req, res, next) => {
 
 const getAttainmentReport = async (req, res, next) => {
   try {
-    const { sessionId, departmentId, studentId } = req.query;
+    const { sessionId, departmentId, programId, studentId } = req.query;
     const institutionId = req.user.institutionId;
+
+    // programId scopes the report to one programme's outcomes. Without it, PO1
+    // from two programmes would be summed into a single row despite meaning
+    // different things, since outcome codes are only unique within a curriculum
+    // version.
+    //
+    // The department filter was also being lost: `program` appeared twice in the
+    // object literal when both a session and a department were given, and the
+    // last key wins, so the institution scope silently disappeared.
+    const programFilter = {
+      ...(programId ? { id: programId } : {}),
+      ...(departmentId ? { departmentId } : {}),
+      department: { institutionId },
+    };
 
     const courseWhere = {
       deletedAt: null,
-      program: { department: { institutionId } },
+      program: programFilter,
       ...(sessionId && { sessionId }),
-      ...(departmentId && { program: { departmentId } }),
     };
 
     const courses = await prisma.course.findMany({

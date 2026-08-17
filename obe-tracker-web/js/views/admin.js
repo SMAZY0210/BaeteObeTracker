@@ -918,40 +918,123 @@ const AdminView={
   },
   _loadU(){ },
 
+  // ── Program Outcomes ─────────────────────────────────────────
+  // Scoped to one programme. Outcomes belong to a curriculum version, so a
+  // global list mixes versions and programmes that mean different things by the
+  // same code, which is exactly what the versioning was added to prevent.
   async outcomes(){
     const progs = await Api.getPrograms();
     document.getElementById('view-root').innerHTML = `
       <div class="page-hd">
-        <div class="page-hd-left"><h1>Program Outcomes</h1><div class="hd-sub">PO1-PO12 per program</div></div>
+        <div class="page-hd-left"><h1>Program Outcomes</h1><div class="hd-sub">PO1 to PO12 for the selected program</div></div>
         <div class="page-hd-actions">
           <select id="po-prog" style="min-width:260px" onchange="AdminView._loadPOs()">
-            ${progs.map(p=>`<option value="${p.id}">${p.code} - ${p.name}</option>`).join('')}
+            <option value="">Select a program</option>
+            ${progs.map(p=>`<option value="${p.id}">${esc(p.code)} - ${esc(p.name)}</option>`).join('')}
           </select>
           <button class="btn btn-primary" onclick="AdminView._addPO()">${ico('plus')} Add PO</button>
         </div>
       </div>
-      <div id="po-area">${loading()}</div>`;
-    if (progs.length) this._loadPOs();
+      <div id="po-area"><div class="empty-box"><div class="empty-ico">${ico('target',24)}</div><h3>Select a program</h3><p>Outcomes belong to a program's curriculum version, so pick one to see its list.</p></div></div>`;
   },
 
   async _loadPOs(){
-    const pid=document.getElementById('po-prog')?.value;if(!pid)return;
-    const el=document.getElementById('po-area');el.innerHTML=loading();
+    const pid = document.getElementById('po-prog')?.value;
+    const el = document.getElementById('po-area');
+    if(!pid){
+      el.innerHTML = `<div class="empty-box"><div class="empty-ico">${ico('target',24)}</div><h3>Select a program</h3><p>Outcomes belong to a program's curriculum version, so pick one to see its list.</p></div>`;
+      return;
+    }
+    el.innerHTML = loading();
+
     try{
-      const l=await Api.getProgramOutcomes(pid);
-      el.innerHTML=l.length?`<div class="po-grid">${l.map(po=>`<div class="po-card">
-        <div class="po-card-top"><span class="po-code">${po.code}</span>
-          <div style="display:flex;gap:6px">
-            <button class="btn btn-secondary btn-xs" onclick="AdminView._editPO('${po.id}','${po.code}','${po.title.replace(/'/g,'&#39;')}','${(po.description||'').replace(/'/g,'&#39;')}')">${ico('edit',13)} Edit</button>
-            <button class="icon-btn danger" onclick="AdminView._delPO('${po.id}','${po.code}')">${ico('trash',13)}</button>
-          </div>
-        </div>
-        <div class="po-card-title">${po.title}</div>
-        ${po.description?`<div class="po-card-desc">${po.description}</div>`:''}
-      </div>`).join('')}</div>`
-      :`<div class="empty-box"><div class="empty-ico">${ico('target',24)}</div><h3>No outcomes yet</h3><p>Add PO1-PO12 for this program.</p></div>`;
-    }catch(e){el.innerHTML=`<div class="alert alert-error"><span class="alert-icon">⚠</span>${e.message}</div>`}
+      // Courses in this programme, so each PO can list the COs mapped to it.
+      const [pos, courses] = await Promise.all([
+        Api.getProgramOutcomes(pid),
+        Api.getCourses().catch(()=>[]),
+      ]);
+
+      if(!pos.length){
+        el.innerHTML = `<div class="empty-box"><div class="empty-ico">${ico('target',24)}</div><h3>No outcomes yet</h3><p>Add PO1 to PO12 for this program.</p></div>`;
+        return;
+      }
+
+      // Gather mappings across the programme's courses. Each PO row expands to
+      // the COs feeding it; there is no separate CO table, because a CO listed
+      // apart from the outcome it serves says nothing on its own.
+      const progCourses = courses.filter(c => c.programId === pid);
+      const perCourse = await Promise.all(
+        progCourses.map(c => Api.getMapping(c.id).then(r=>({course:c, mappings:r.mappings||[], cos:r.courseOutcomes||[]})).catch(()=>null))
+      );
+
+      const byPo = {};
+      for(const pc of perCourse.filter(Boolean)){
+        const coById = Object.fromEntries(pc.cos.map(c=>[c.id,c]));
+        for(const m of pc.mappings){
+          if(!m.correlation) continue;
+          (byPo[m.programOutcomeId] ||= []).push({
+            code: coById[m.courseOutcomeId]?.code || '',
+            title: coById[m.courseOutcomeId]?.title || '',
+            courseCode: pc.course.code,
+            correlation: m.correlation,
+          });
+        }
+      }
+
+      // PO1..PO12 in order. A text sort puts PO10 between PO1 and PO2.
+      const num = c => { const n = parseInt(String(c).replace(/\D+/g,''),10); return isNaN(n)?9999:n; };
+      pos.sort((a,b)=> num(a.code)-num(b.code) || a.code.localeCompare(b.code));
+
+      el.innerHTML = `
+        <div class="tbl-wrap"><table>
+          <thead><tr>
+            <th style="width:80px">PO</th><th>Title</th>
+            <th style="width:130px;text-align:center">Mapped COs</th>
+            <th class="td-r" style="width:150px">Actions</th>
+          </tr></thead>
+          <tbody>${pos.map(po=>{
+            const cos = byPo[po.id] || [];
+            const rowId = 'poco-' + po.id;
+            return `<tr>
+              <td><span class="badge bg-blue">${po.code}</span></td>
+              <td><div class="fw6">${esc(po.title)}</div>${po.description?`<div class="text-muted" style="font-size:11.5px;line-height:1.45;margin-top:2px">${esc(po.description)}</div>`:''}</td>
+              <td style="text-align:center">${cos.length
+                ? `<button class="btn btn-ghost btn-xs" onclick="AdminView._toggleRow('${rowId}')">${cos.length} CO${cos.length===1?'':'s'}</button>`
+                : '<span class="text-muted text-sm">none</span>'}</td>
+              <td class="td-r" style="white-space:nowrap">
+                <button class="btn btn-secondary btn-xs" onclick="AdminView._editPO('${po.id}','${po.code}','${(po.title||'').replace(/'/g,'&#39;')}','${(po.description||'').replace(/'/g,'&#39;')}')">${ico('edit',13)} Edit</button>
+                <button class="icon-btn danger" onclick="AdminView._delPO('${po.id}','${po.code}')">${ico('trash',13)}</button>
+              </td>
+            </tr>
+            ${cos.length ? `<tr id="${rowId}" style="display:none"><td colspan="4" style="padding:0;background:var(--surface2)">
+              <div style="padding:12px 20px">
+                <div class="text-sm fw7 mb2" style="color:var(--text3)">Course outcomes mapped to ${po.code}</div>
+                <table style="width:100%;font-size:12.5px;border-collapse:collapse">
+                  <thead><tr style="border-bottom:1px solid var(--border)">
+                    <th style="padding:5px 8px;text-align:left">Course</th>
+                    <th style="padding:5px 8px;text-align:left">CO</th>
+                    <th style="padding:5px 8px;text-align:left">Title</th>
+                    <th style="padding:5px 8px;text-align:center">Correlation</th>
+                  </tr></thead>
+                  <tbody>${cos.map(c=>{
+                    const badge = {STRONG:'bg-green',MODERATE:'bg-blue',WEAK:'bg-gray'}[c.correlation]||'bg-gray';
+                    return `<tr style="border-bottom:1px solid var(--border)">
+                      <td style="padding:5px 8px">${esc(c.courseCode)}</td>
+                      <td style="padding:5px 8px"><b>${esc(c.code)}</b></td>
+                      <td style="padding:5px 8px">${esc(c.title)}</td>
+                      <td style="padding:5px 8px;text-align:center"><span class="badge ${badge}">${c.correlation.toLowerCase()}</span></td>
+                    </tr>`;
+                  }).join('')}</tbody>
+                </table>
+              </div></td></tr>` : ''}`;
+          }).join('')}</tbody>
+        </table></div>
+        <p class="text-sm text-muted mt3">${pos.length} outcome(s). Outcomes with no CO mapped cannot be attained, which s.5.2(v) asks the program to demonstrate for all of them.</p>`;
+    }catch(e){
+      el.innerHTML = `<div class="alert alert-error"><span class="alert-icon">&#9888;</span>${esc(e.message)}</div>`;
+    }
   },
+
   _addPO(){if(!document.getElementById('po-prog')?.value)return toast('Select a program first','err');
     showModal('Add Program Outcome',`<div class="form-row fr2 mb3"><div class="fg"><label>Code</label><input id="mpo-code" placeholder="e.g. PO1"></div><div class="fg"><label>Title</label><input id="mpo-title" placeholder="e.g. Engineering Knowledge"></div></div>
       <div class="fg"><label>Description</label><textarea id="mpo-desc" rows="3" placeholder="Describe this outcome…"></textarea></div>`,
@@ -1174,45 +1257,77 @@ const AdminView={
   async attainmentReport(){
     document.getElementById('view-root').innerHTML=`<div class="page-hd"><div class="page-hd-left"><h1>Attainment Report</h1><div class="hd-sub">CO/PO attainment by batch and department</div></div></div>${loading()}`;
     try{
-      const [sessions,depts]=await Promise.all([Api.getSessions(),Api.getDepartments()]);
+      const [sessions,depts,progs]=await Promise.all([Api.getSessions(),Api.getDepartments(),Api.getPrograms()]);
       document.getElementById('view-root').innerHTML=`
-        <div class="page-hd"><div class="page-hd-left"><h1>Attainment Report</h1><div class="hd-sub">View attainment across batches and departments</div></div></div>
+        <div class="page-hd"><div class="page-hd-left"><h1>Attainment Report</h1><div class="hd-sub">Cohort figures by program, and individual student reports</div></div></div>
+
         <div class="card mb4"><div class="card-bd">
+          <div class="sec-title mb3">Group Attainment</div>
           <div class="filter-bar" style="margin-bottom:0">
+            <div class="fg" style="flex:1;margin:0"><label>Program <span style="color:var(--l0)">*</span></label>
+              <select id="ar-prog"><option value="">Select Program</option>${progs.map(p=>`<option value="${p.id}" data-dept="${p.departmentId||''}">${esc(p.code)} - ${esc(p.name)}</option>`).join('')}</select></div>
             <div class="fg" style="flex:1;margin:0"><label>Batch / Session</label>
-              <select id="ar-sess"><option value="">Select Batch</option>${sessions.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</select></div>
+              <select id="ar-sess"><option value="">All batches</option>${sessions.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
             <div class="fg" style="flex:1;margin:0"><label>Department</label>
-              <select id="ar-dept"><option value="">Select Department</option>${depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}</select></div>
-            <div class="fg" style="flex:1;margin:0"><label>Student ID (optional)</label>
-              <input id="ar-stu" placeholder="e.g. 23549009001" style="font-family:monospace"></div>
+              <select id="ar-dept"><option value="">All departments</option>${depts.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
             <div style="padding-top:22px">
               <button class="btn btn-primary" onclick="AdminView._loadAttainReport()">${ico('chart')} View Report</button>
             </div>
           </div>
+          <p class="text-sm text-muted mt2">A program is required. Outcome codes mean different things in different programs, so a figure aggregated across them would not describe anything.</p>
         </div></div>
-        <div id="ar-result"></div>`;
+        <div id="ar-result"></div>
+
+        <!-- Individual lookup is its own section. It was a field inside the
+             group filter bar, which read as if it narrowed the cohort figures
+             when in fact it replaced them with one student's report. -->
+        <div class="card mt4"><div class="card-bd">
+          <div class="sec-title mb1">Individual Student Report</div>
+          <p class="text-sm text-muted mb3">Independent of the filters above. Search the whole institution by roll number or email.</p>
+          <div class="filter-bar" style="margin-bottom:0">
+            <div class="fg" style="flex:1;margin:0"><label>Roll number or email</label>
+              <input id="ar-stu" placeholder="e.g. 23549009001" style="font-family:monospace"
+                onkeydown="if(event.key==='Enter')AdminView._loadStudentReport()"></div>
+            <div style="padding-top:22px">
+              <button class="btn btn-secondary" onclick="AdminView._loadStudentReport()">${ico('person')} View Student</button>
+            </div>
+          </div>
+          <div id="ar-stu-result" class="mt3"></div>
+        </div></div>`;
     }catch(e){document.getElementById('view-root').innerHTML+=`<div class="alert alert-error"><span class="alert-icon">&#9888;</span>${e.message}</div>`}
   },
 
+  // Individual lookup, separate from the cohort filters entirely.
+  async _loadStudentReport(){
+    const q=document.getElementById('ar-stu')?.value?.trim();
+    const el=document.getElementById('ar-stu-result');
+    if(!q) return toast('Enter a roll number or email','err');
+    el.innerHTML=loading();
+    try{
+      const users=await Api.getUsers({role:'STUDENT',search:q});
+      const stu=users.find(u=>u.institutionalId===q||u.email===q) || users[0];
+      if(!stu){ el.innerHTML='<div class="alert alert-warn"><span class="alert-icon">!</span>No student matching "'+esc(q)+'".</div>'; return; }
+      el.innerHTML='';
+      AdminView._viewStuAtt(stu.id, stu.firstName+' '+stu.lastName);
+    }catch(e){ el.innerHTML='<div class="alert alert-error"><span class="alert-icon">&#9888;</span>'+esc(e.message)+'</div>'; }
+  },
+
   async _loadAttainReport(){
+    const progId=document.getElementById('ar-prog')?.value;
     const sessId=document.getElementById('ar-sess').value;
     const deptId=document.getElementById('ar-dept').value;
     const el=document.getElementById('ar-result');
+
+    if(!progId){
+      el.innerHTML='<div class="alert alert-warn"><span class="alert-icon">!</span>Select a program first. PO1 in one program is not PO1 in another, so a figure spanning programs would be meaningless.</div>';
+      return;
+    }
+
     el.innerHTML=loading();
     try{
-      const stuInput=document.getElementById('ar-stu')?.value?.trim();
-      const filters={};
+      const filters={ programId: progId };
       if(sessId) filters.sessionId=sessId;
       if(deptId) filters.departmentId=deptId;
-
-      if(stuInput){
-        const users=await Api.getUsers({role:'STUDENT',search:stuInput});
-        const stu=users.find(u=>u.institutionalId===stuInput||u.email===stuInput);
-        if(!stu){el.innerHTML='<div class="alert alert-warn">Student "'+stuInput+'" not found.</div>';return;}
-        AdminView._viewStuAtt(stu.id, stu.firstName+' '+stu.lastName);
-        el.innerHTML='';
-        return;
-      }
 
       const{coSummary,poSummary}=await Api.getAttainmentReport(filters);
       if(!coSummary.length&&!poSummary.length){
@@ -1242,7 +1357,7 @@ const AdminView={
             <td style="text-align:center;font-weight:700;color:var(--l3)">${r.attained||0}</td>
             <td style="text-align:center;color:var(--text3)">${r.total||0}</td>
             <td>${attBar(r.attainmentRate||0,lvl)}</td>
-            <td style="text-align:center"><button class="btn btn-ghost btn-xs" onclick="AdminView._togglePODetail('po-det-${r.poCode}')">${ico('expand',12)} Show COs</button></td>
+            <td style="text-align:center"><button class="btn btn-ghost btn-xs" onclick="AdminView._togglePODetail('po-det-${r.poCode}')">Show COs</button></td>
           </tr>
           <tr id="po-det-${r.poCode}" style="display:none"><td colspan="6" style="padding:0;background:var(--surface2)">
             <div style="padding:12px 20px">
