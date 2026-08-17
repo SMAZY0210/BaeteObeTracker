@@ -394,19 +394,51 @@ const saveMapping = async (req, res, next) => {
     const { courseId } = req.params;
     await assertFacultyOwns(req.user, courseId);
     const { mappings } = req.body;
-    const existing = await prisma.coPoMapping.findFirst({ where: { courseId }, orderBy: { version: 'desc' } });
-    const nextVersion = (existing?.version || 0) + 1;
-    await prisma.$transaction(
-      mappings.map(({ courseOutcomeId, programOutcomeId, correlation }) =>
-        prisma.coPoMapping.upsert({
-          where: { courseId_courseOutcomeId_programOutcomeId: { courseId, courseOutcomeId, programOutcomeId } },
-          create: { courseId, courseOutcomeId, programOutcomeId, correlation: correlation || null, version: nextVersion },
-          update: { correlation: correlation || null, version: nextVersion },
-        })
-      )
+    const latest = await prisma.coPoMapping.findFirst({ where: { courseId }, orderBy: { version: 'desc' } });
+    const nextVersion = (latest?.version || 0) + 1;
+
+    // correlation is non-nullable: a mapping without a strength is not a
+    // mapping. "Not mapped" is expressed by the row being absent, not by a null.
+    const VALID = ['WEAK', 'MODERATE', 'STRONG'];
+    const keep = (mappings || []).filter(
+      (m) => m && m.courseOutcomeId && m.programOutcomeId && VALID.includes(m.correlation)
     );
+
+    // Replace rather than upsert.
+    //
+    // upsert's `create` accepts either the relation form or the scalar-FK form
+    // and Prisma decides which at runtime. It was landing on the relation form
+    // and rejecting the payload with "Argument `course` is missing" even when
+    // the correlation was a perfectly valid MODERATE, so the failure was in that
+    // resolution rather than in the data. createMany takes plain scalars and has
+    // no such union, and delete-then-insert says what is actually meant: the
+    // matrix for these outcomes becomes exactly what was sent.
+    const touchedCoIds = [...new Set((mappings || []).map((m) => m && m.courseOutcomeId).filter(Boolean))];
+
+    await prisma.$transaction([
+      ...(touchedCoIds.length
+        ? [prisma.coPoMapping.deleteMany({ where: { courseId, courseOutcomeId: { in: touchedCoIds } } })]
+        : []),
+      ...(keep.length
+        ? [
+            prisma.coPoMapping.createMany({
+              data: keep.map(({ courseOutcomeId, programOutcomeId, correlation }) => ({
+                courseId,
+                courseOutcomeId,
+                programOutcomeId,
+                correlation,
+                version: nextVersion,
+              })),
+            }),
+          ]
+        : []),
+    ]);
+
     await recomputeAttainmentForCourse(courseId, nextVersion, req.user.institutionId);
-    res.json({ status: 'success', data: { message: 'Mapping saved', version: nextVersion } });
+    res.json({
+      status: 'success',
+      data: { message: 'Mapping saved', version: nextVersion, saved: keep.length },
+    });
   } catch (err) { next(err); }
 };
 
