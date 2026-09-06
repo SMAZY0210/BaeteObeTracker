@@ -150,9 +150,9 @@ if command -v psql >/dev/null 2>&1; then
   say "Batches, their department and how many students sit in each:"
   psql "$DIRECT_URL" -v ON_ERROR_STOP=1 -c \
     'SELECT s.name AS batch, COALESCE(d.code, $$(none)$$) AS dept, count(u.id) AS students
-       FROM "Session" s
+       FROM "Batch" s
        LEFT JOIN "Department" d ON d.id = s."departmentId"
-       LEFT JOIN "User" u ON u."sessionId" = s.id AND u."deletedAt" IS NULL
+       LEFT JOIN "User" u ON u."batchId" = s.id AND u."deletedAt" IS NULL
       GROUP BY 1, 2 ORDER BY 1;'
 else
   say "psql not on PATH, skipping the check query"

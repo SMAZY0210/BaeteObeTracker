@@ -219,16 +219,16 @@ async function main() {
   }
   console.log(`✓ PO1-PO${framework.frameworkOutcomes.length} from ${framework.code} (Washington Accord)`);
 
-  // ── Sessions ──────────────────────────────────────────────────
-  // A session IS a batch, and a batch now belongs to one department. The admin
-  // UI filters with a strict s.departmentId === dept, so a batch left at null
+  // ── Batches ───────────────────────────────────────────────────
+  // A batch is a student cohort and now belongs to one department. The admin
+  // UI filters with a strict b.departmentId === dept, so a batch left at null
   // is invisible in every student-assignment dropdown even though the row is
-  // there. Every session below gets a departmentId.
+  // there. Every batch below gets a departmentId.
   //
   // The five ICT ids are unchanged on purpose. Re-running this seed repairs the
   // existing rows in place instead of forking a second copy and orphaning the
-  // courses and marks already hanging off them. On a fresh database you can
-  // rename them to session-ict-batch-2023 and so on.
+  // students already assigned to them. On a fresh database you can rename
+  // them to batch-ict-2023 and so on.
   const batchData = [
     { id: 'session-batch-2022',     deptId: deptICT.id, name: 'Batch 2022', start: '2022-01-01', end: '2026-06-30' },
     { id: 'session-batch-2023',     deptId: deptICT.id, name: 'Batch 2023', start: '2023-01-01', end: '2027-06-30' },
@@ -241,7 +241,7 @@ async function main() {
 
   const sessions = {};
   for (const b of batchData) {
-    sessions[b.name] = await prisma.session.upsert({
+    sessions[b.name] = await prisma.batch.upsert({
       where: { id: b.id },
       update: {
         departmentId: b.deptId,
@@ -268,43 +268,67 @@ async function main() {
   }
   console.log('✓ Batches: ICT 2022-2026, BBA 2023 (all department-scoped)');
 
+  // ── Academic Sessions (Jan-Jun / Jul-Dec + year) ─────────────────
+  // These are the actual teaching terms, independent of which batch a
+  // student belongs to. A course gets assigned to a faculty for one of
+  // these, and marks are recorded within one of these.
+  const academicSessionData = [
+    { term: 'JAN_JUN', year: 2026 },
+    { term: 'JUL_DEC', year: 2026 },
+  ];
+  const academicSessions = {};
+  for (const s of academicSessionData) {
+    const key = `${s.term}_${s.year}`;
+    academicSessions[key] = await prisma.academicSession.upsert({
+      where: { institutionId_term_year: { institutionId: institution.id, term: s.term, year: s.year } },
+      update: {},
+      create: { institutionId: institution.id, term: s.term, year: s.year },
+    });
+  }
+  const currentTerm = academicSessions['JAN_JUN_2026'];
+  console.log('✓ Academic sessions: Jan-Jun 2026, Jul-Dec 2026');
+
   // ── Courses ───────────────────────────────────────────────────
+  // Courses belong to a curriculum version, not to any one batch, so the
+  // same row is reused by every batch that studies under curriculumV1. Who
+  // actually taught it and when is Course Assignment's job below, not the
+  // course row itself.
   const sre = await prisma.course.upsert({
-    where: { sessionId_code: { sessionId: sessions['Batch 2023'].id, code: 'ICE-3207' } },
+    where: { curriculumVersionId_code: { curriculumVersionId: curriculumV1.id, code: 'ICE-3207' } },
     update: {},
-    create: { programId: progBICT.id, sessionId: sessions['Batch 2023'].id, name: 'Software and Requirement Engineering', code: 'ICE-3207', creditHours: 3 },
+    create: { programId: progBICT.id, curriculumVersionId: curriculumV1.id, name: 'Software and Requirement Engineering', code: 'ICE-3207', creditHours: 3 },
   });
 
   const web = await prisma.course.upsert({
-    where: { sessionId_code: { sessionId: sessions['Batch 2023'].id, code: 'ICE-3205' } },
+    where: { curriculumVersionId_code: { curriculumVersionId: curriculumV1.id, code: 'ICE-3205' } },
     update: {},
-    create: { programId: progBICT.id, sessionId: sessions['Batch 2023'].id, name: 'Web Technologies', code: 'ICE-3205', creditHours: 3 },
+    create: { programId: progBICT.id, curriculumVersionId: curriculumV1.id, name: 'Web Technologies', code: 'ICE-3205', creditHours: 3 },
   });
 
   const ai = await prisma.course.upsert({
-    where: { sessionId_code: { sessionId: sessions['Batch 2022'].id, code: 'ICE-4107' } },
+    where: { curriculumVersionId_code: { curriculumVersionId: curriculumV1.id, code: 'ICE-4107' } },
     update: {},
-    create: { programId: progBICT.id, sessionId: sessions['Batch 2022'].id, name: 'Artificial Intelligence', code: 'ICE-4107', creditHours: 3 },
+    create: { programId: progBICT.id, curriculumVersionId: curriculumV1.id, name: 'Artificial Intelligence', code: 'ICE-4107', creditHours: 3 },
   });
 
-  // SRE (ICE-3207) → Abrar Zawad (primary grader)
+  // SRE (ICE-3207) → Abrar Zawad (primary grader), Jan-Jun 2026
   await prisma.courseAssignment.upsert({
-    where: { courseId_facultyId: { courseId: sre.id, facultyId: abrar.id } },
+    where: { courseId_facultyId_academicSessionId: { courseId: sre.id, facultyId: abrar.id, academicSessionId: currentTerm.id } },
     update: {},
-    create: { courseId: sre.id, facultyId: abrar.id },
+    create: { courseId: sre.id, facultyId: abrar.id, academicSessionId: currentTerm.id },
   });
   // Web Technologies (ICE-3205) → Refath Ara Islam (primary grader)
   await prisma.courseAssignment.upsert({
-    where: { courseId_facultyId: { courseId: web.id, facultyId: refath.id } },
+    where: { courseId_facultyId_academicSessionId: { courseId: web.id, facultyId: refath.id, academicSessionId: currentTerm.id } },
     update: {},
-    create: { courseId: web.id, facultyId: refath.id },
+    create: { courseId: web.id, facultyId: refath.id, academicSessionId: currentTerm.id },
   });
   // Artificial Intelligence (ICE-4107) → both faculty
   for (const fac of [abrar, refath]) {
     await prisma.courseAssignment.upsert({
-      where: { courseId_facultyId: { courseId: ai.id, facultyId: fac.id } },
+      where: { courseId_facultyId_academicSessionId: { courseId: ai.id, facultyId: fac.id, academicSessionId: currentTerm.id } },
       update: {},
-      create: { courseId: ai.id, facultyId: fac.id },
+      create: { courseId: ai.id, facultyId: fac.id, academicSessionId: currentTerm.id },
     });
   }
   console.log('✓ Course assignments:');
@@ -618,7 +642,7 @@ async function main() {
   ];
 
   // Every id above starts 235..., so this whole list is the ICT Batch 2023
-  // cohort. sessionId is what puts them in that batch; without it the student
+  // cohort. batchId is what puts them in that batch; without it the student
   // list renders but the batch and section filters return nothing.
   const ictBatch2023 = sessions['Batch 2023'];
   const students = [];
@@ -636,7 +660,7 @@ async function main() {
         passwordHash: stuPwHash,
         institutionalId: id,
         section,
-        sessionId: ictBatch2023.id,
+        batchId: ictBatch2023.id,
       },
       create: {
         email: `${id}@bup.edu.bd`,
@@ -645,7 +669,7 @@ async function main() {
         firstName, lastName,
         institutionalId: id,
         section,
-        sessionId: ictBatch2023.id,
+        batchId: ictBatch2023.id,
         institutionId: institution.id,
       },
     });
@@ -655,16 +679,17 @@ async function main() {
   console.log(`  all attached to ${ictBatch2023.name} under ICT, split into sections A and B`);
 
   // ── Enrol Batch 2023 students in ICE-3207 AND ICE-3205 ──────
+  // Enrolled for Jan-Jun 2026, same term the course assignments above use.
   for (const stu of students) {
     await prisma.enrolment.upsert({
-      where: { studentId_courseId: { studentId: stu.id, courseId: sre.id } },
+      where: { studentId_courseId_academicSessionId: { studentId: stu.id, courseId: sre.id, academicSessionId: currentTerm.id } },
       update: {},
-      create: { studentId: stu.id, courseId: sre.id, programId: progBICT.id },
+      create: { studentId: stu.id, courseId: sre.id, academicSessionId: currentTerm.id, programId: progBICT.id },
     });
     await prisma.enrolment.upsert({
-      where: { studentId_courseId: { studentId: stu.id, courseId: web.id } },
+      where: { studentId_courseId_academicSessionId: { studentId: stu.id, courseId: web.id, academicSessionId: currentTerm.id } },
       update: {},
-      create: { studentId: stu.id, courseId: web.id, programId: progBICT.id },
+      create: { studentId: stu.id, courseId: web.id, academicSessionId: currentTerm.id, programId: progBICT.id },
     });
   }
   console.log(`✓ All ${students.length} students enrolled in ICE-3207 (SRE) and ICE-3205 (Web Technologies)`);
@@ -757,6 +782,7 @@ async function main() {
         create: {
           id,
           courseId,
+          academicSessionId: currentTerm.id,
           type: def.type,
           title: def.title,
           totalMarks: def.totalMarks,
@@ -954,18 +980,18 @@ async function main() {
   // Both of these fail silently in the UI. An unscoped batch never shows in a
   // department dropdown, and a batchless student never shows in a batch filter.
   // Neither throws, so check for them here rather than during a demo.
-  const orphanSessions = await prisma.session.findMany({
+  const orphanBatches = await prisma.batch.findMany({
     where: { institutionId: institution.id, departmentId: null },
     select: { id: true, name: true },
   });
   const orphanStudents = await prisma.user.count({
-    where: { institutionId: institution.id, role: 'STUDENT', sessionId: null, deletedAt: null },
+    where: { institutionId: institution.id, role: 'STUDENT', batchId: null, deletedAt: null },
   });
 
   console.log('');
-  if (orphanSessions.length) {
-    console.log(`  ⚠ ${orphanSessions.length} batch(es) with no department, invisible in the admin UI:`);
-    orphanSessions.forEach(s => console.log(`      ${s.name}  (${s.id})`));
+  if (orphanBatches.length) {
+    console.log(`  ⚠ ${orphanBatches.length} batch(es) with no department, invisible in the admin UI:`);
+    orphanBatches.forEach(s => console.log(`      ${s.name}  (${s.id})`));
   } else {
     console.log('  ✓ every batch is scoped to a department');
   }

@@ -18,12 +18,12 @@ const AdminView={
   // ── Structure ──────────────────────────────────────────────
   async structure(){
     document.getElementById('view-root').innerHTML=`
-      <div class="page-hd"><div class="page-hd-left"><h1>Institutional Structure</h1><div class="hd-sub">Faculties · Departments · Programs · Sessions</div></div></div>
+      <div class="page-hd"><div class="page-hd-left"><h1>Institutional Structure</h1><div class="hd-sub">Faculties · Departments · Programs · Batches · Academic Sessions</div></div></div>
       <div id="struct">
-        <div class="tab-bar"><button class="tab-btn active" data-tab="tf">Faculties</button><button class="tab-btn" data-tab="td">Departments</button><button class="tab-btn" data-tab="tp">Programs</button><button class="tab-btn" data-tab="ts">Sessions</button></div>
-        <div class="tab-pane active" id="tf"></div><div class="tab-pane" id="td"></div><div class="tab-pane" id="tp"></div><div class="tab-pane" id="ts"></div>
+        <div class="tab-bar"><button class="tab-btn active" data-tab="tf">Faculties</button><button class="tab-btn" data-tab="td">Departments</button><button class="tab-btn" data-tab="tp">Programs</button><button class="tab-btn" data-tab="ts">Batches</button><button class="tab-btn" data-tab="tas">Academic Sessions</button></div>
+        <div class="tab-pane active" id="tf"></div><div class="tab-pane" id="td"></div><div class="tab-pane" id="tp"></div><div class="tab-pane" id="ts"></div><div class="tab-pane" id="tas"></div>
       </div>`;
-    initTabs('struct');this._faculties();this._depts();this._progs();this._sessions();
+    initTabs('struct');this._faculties();this._depts();this._progs();this._batches();this._academicSessions();
   },
 
   async _faculties(){
@@ -56,7 +56,7 @@ const AdminView={
   _deptContents(d){
     const c=d._count||{},parts=[];
     if(c.programs) parts.push(`${c.programs} prog`);
-    if(c.sessions) parts.push(`${c.sessions} batch`);
+    if(c.batches) parts.push(`${c.batches} batch`);
     if(c.students) parts.push(`${c.students} student`);
     if(c.teachers) parts.push(`${c.teachers} teacher`);
     return parts.length?parts.join(' \u00b7 '):'<span class="text-muted">empty</span>';
@@ -122,89 +122,209 @@ const AdminView={
     if(!name||!code)return toast('Name and code required','err');
     try{await Api.createProgram({departmentId,name,code});toast('Program added');closeModal();this._progs()}catch(e){toast(e.message,'err')}},
 
-  async _sessions(){
+  async _batches(){
     const el=document.getElementById('ts');
-    el.innerHTML=`<div class="flex-between mb3"><span class="sec-title">Sessions / Batches</span><button class="btn btn-primary btn-sm" onclick="AdminView._addSession()">${ico('plus')} Add</button></div>
+    el.innerHTML=`<div class="flex-between mb3"><span class="sec-title">Batches</span><button class="btn btn-primary btn-sm" onclick="AdminView._addBatch()">${ico('plus')} Add</button></div>
       <div class="tbl-wrap"><table><thead><tr><th>Name</th><th>Department</th><th>Students</th><th>Start</th><th>Status</th><th class="td-r">Actions</th></tr></thead><tbody id="stb">${tdLoad(6)}</tbody></table></div>`;
     try{
-      const l=await Api.getSessions();const sc={ACTIVE:'bg-green',DRAFT:'bg-gray',CLOSED:'bg-amber',ARCHIVED:'bg-gray'};
+      const l=await Api.getBatches();const sc={ACTIVE:'bg-green',DRAFT:'bg-gray',CLOSED:'bg-amber',ARCHIVED:'bg-gray'};
       document.getElementById('stb').innerHTML=l.length?l.map(s=>`<tr><td class="fw7">${s.name}</td>
         <td class="text-muted">${s.department?.name||'<span style="color:var(--text3)">Unassigned</span>'}</td>
         <td class="text-muted">${s._count?.students??0}</td>
         <td class="text-muted">${new Date(s.startDate).getFullYear()}</td>
         <td><span class="badge ${sc[s.status]||'bg-gray'}">${s.status}</span></td>
-        <td class="td-r" style="white-space:nowrap"><button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="AdminView._editSession('${s.id}','${s.name.replace(/'/g,"\\'")}','${s.status}','${s.departmentId||''}')">${ico('edit',13)} Edit</button>
-        <button class="icon-btn danger" onclick="AdminView._delSession('${s.id}','${s.name.replace(/'/g,"\\'")}',${s._count?.students??0})">${ico('trash',13)}</button></td></tr>`).join(''):tdEmpty('No sessions yet',6);
+        <td class="td-r" style="white-space:nowrap"><button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="AdminView._editBatch('${s.id}','${s.name.replace(/'/g,"\\'")}','${s.status}','${s.departmentId||''}')">${ico('edit',13)} Edit</button>
+        <button class="icon-btn danger" onclick="AdminView._delBatch('${s.id}','${s.name.replace(/'/g,"\\'")}',${s._count?.students??0})">${ico('trash',13)}</button></td></tr>`).join(''):tdEmpty('No batches yet',6);
     }catch(e){document.getElementById('stb').innerHTML=tdEmpty(e.message,6)}
   },
   _sessDeptSelect(sel){return `<div class="fg"><label>Department</label><select id="ms-dept"><option value="">-- Unassigned --</option>${(AdminView._sDeptCache||[]).map(d=>`<option value="${d.id}" ${d.id===sel?'selected':''}>${d.name}</option>`).join('')}</select></div>`},
-  async _addSession(){
+  async _addBatch(){
     try{ AdminView._sDeptCache=await Api.getDepartments(); }catch(_){ AdminView._sDeptCache=[]; }
-    showModal('Add Session',`<div class="form-row fr2"><div class="fg"><label>Name</label><input id="ms-name" placeholder="e.g. ICE 2026"></div><div class="fg"><label>Start Date</label><input type="date" id="ms-date"></div></div>${AdminView._sessDeptSelect('')}`,
-    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveSession()">${ico('save')} Save</button>`)},
-  async _saveSession(){const name=document.getElementById('ms-name').value.trim(),startDate=document.getElementById('ms-date').value,departmentId=document.getElementById('ms-dept')?.value||null;if(!name||!startDate)return toast('Name and date required','err');
-    try{await Api.createSession({name,startDate,departmentId});toast('Session added');closeModal();this._sessions()}catch(e){toast(e.message,'err')}},
-  async _editSession(id,name,cur,deptId){
+    showModal('Add Batch',`<div class="form-row fr2"><div class="fg"><label>Name</label><input id="ms-name" placeholder="e.g. ICE 2026"></div><div class="fg"><label>Start Date</label><input type="date" id="ms-date"></div></div>${AdminView._sessDeptSelect('')}`,
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveBatch()">${ico('save')} Save</button>`)},
+  async _saveBatch(){const name=document.getElementById('ms-name').value.trim(),startDate=document.getElementById('ms-date').value,departmentId=document.getElementById('ms-dept')?.value||null;if(!name||!startDate)return toast('Name and date required','err');
+    try{await Api.createBatch({name,startDate,departmentId});toast('Batch added');closeModal();this._batches()}catch(e){toast(e.message,'err')}},
+  async _editBatch(id,name,cur,deptId){
     try{ AdminView._sDeptCache=await Api.getDepartments(); }catch(_){ AdminView._sDeptCache=[]; }
     showModal(`Edit - ${name}`,`${AdminView._sessDeptSelect(deptId)}<div class="fg mt2"><label>Status</label><select id="ms-status">${['DRAFT','ACTIVE','CLOSED','ARCHIVED'].map(s=>`<option value="${s}" ${s===cur?'selected':''}>${s}</option>`).join('')}</select></div>`,
-    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveSessionEdit('${id}')">${ico('save')} Save</button>`)},
-  async _saveSessionEdit(id){const status=document.getElementById('ms-status').value,departmentId=document.getElementById('ms-dept')?.value||null;try{await Api.updateSession(id,{status,departmentId});toast('Updated');closeModal();this._sessions()}catch(e){toast(e.message,'err')}},
-  async _delSession(id,name,count){if(count>0)return toast(`Cannot delete "${name}": ${count} student(s) still in this batch`,'err');if(!confirm(`Delete session "${name}"?`))return;
-    try{await Api.deleteSession(id);toast('Session deleted');this._sessions()}catch(e){toast(e.message,'err')}},
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveBatchEdit('${id}')">${ico('save')} Save</button>`)},
+  async _saveBatchEdit(id){const status=document.getElementById('ms-status').value,departmentId=document.getElementById('ms-dept')?.value||null;try{await Api.updateBatch(id,{status,departmentId});toast('Updated');closeModal();this._batches()}catch(e){toast(e.message,'err')}},
+  async _delBatch(id,name,count){if(count>0)return toast(`Cannot delete "${name}": ${count} student(s) still in this batch`,'err');if(!confirm(`Delete batch "${name}"?`))return;
+    try{await Api.deleteBatch(id);toast('Batch deleted');this._batches()}catch(e){toast(e.message,'err')}},
 
-  // ── Courses ────────────────────────────────────────────────
+  // ── Academic Sessions (Jan-Jun / Jul-Dec + year) ────────────
+  // These are the actual teaching terms, separate from which batch a
+  // student belongs to. Course Assignment picks one of these.
+  async _academicSessions(){
+    const el=document.getElementById('tas');
+    el.innerHTML=`<div class="flex-between mb3"><span class="sec-title">Academic Sessions</span><button class="btn btn-primary btn-sm" onclick="AdminView._addAcademicSession()">${ico('plus')} Add</button></div>
+      <div class="tbl-wrap"><table><thead><tr><th>Session</th><th>Assignments</th><th>Enrolments</th><th>Status</th><th class="td-r">Actions</th></tr></thead><tbody id="astb">${tdLoad(5)}</tbody></table></div>`;
+    try{
+      const l=await Api.getAcademicSessions();
+      const label=t=>t==='JAN_JUN'?'Jan - Jun':'Jul - Dec';
+      document.getElementById('astb').innerHTML=l.length?l.map(s=>`<tr><td class="fw7">${label(s.term)} ${s.year}</td>
+        <td class="text-muted">${s._count?.assignments??0}</td>
+        <td class="text-muted">${s._count?.enrolments??0}</td>
+        <td><span class="badge ${s.isActive?'bg-green':'bg-gray'}">${s.isActive?'Active':'Inactive'}</span></td>
+        <td class="td-r" style="white-space:nowrap"><button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="AdminView._editAcademicSession('${s.id}','${s.term}',${s.year},${s.isActive})">${ico('edit',13)} Edit</button>
+        <button class="icon-btn danger" onclick="AdminView._delAcademicSession('${s.id}','${label(s.term)} ${s.year}',${(s._count?.assignments??0)+(s._count?.enrolments??0)})">${ico('trash',13)}</button></td></tr>`).join(''):tdEmpty('No academic sessions yet',5);
+    }catch(e){document.getElementById('astb').innerHTML=tdEmpty(e.message,5)}
+  },
+  async _addAcademicSession(){
+    showModal('Add Academic Session',`<div class="form-row fr2"><div class="fg"><label>Term</label><select id="as-term"><option value="JAN_JUN">Jan - Jun</option><option value="JUL_DEC">Jul - Dec</option></select></div><div class="fg"><label>Year</label><input type="number" id="as-year" placeholder="e.g. 2026"></div></div>`,
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveAcademicSession()">${ico('save')} Save</button>`)},
+  async _saveAcademicSession(){const term=document.getElementById('as-term').value,year=parseInt(document.getElementById('as-year').value);if(!year)return toast('Year required','err');
+    try{await Api.createAcademicSession({term,year});toast('Academic session added');closeModal();this._academicSessions()}catch(e){toast(e.message,'err')}},
+  async _editAcademicSession(id,term,year,isActive){
+    showModal('Edit Academic Session',`<div class="form-row fr2"><div class="fg"><label>Term</label><select id="as-term"><option value="JAN_JUN" ${term==='JAN_JUN'?'selected':''}>Jan - Jun</option><option value="JUL_DEC" ${term==='JUL_DEC'?'selected':''}>Jul - Dec</option></select></div><div class="fg"><label>Year</label><input type="number" id="as-year" value="${year}"></div></div><div class="fg mt2"><label><input type="checkbox" id="as-active" ${isActive?'checked':''}> Active</label></div>`,
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveAcademicSessionEdit('${id}')">${ico('save')} Save</button>`)},
+  async _saveAcademicSessionEdit(id){const term=document.getElementById('as-term').value,year=parseInt(document.getElementById('as-year').value),isActive=document.getElementById('as-active').checked;
+    try{await Api.updateAcademicSession(id,{term,year,isActive});toast('Updated');closeModal();this._academicSessions()}catch(e){toast(e.message,'err')}},
+  async _delAcademicSession(id,label,count){if(count>0)return toast(`Cannot delete "${label}": ${count} assignment(s)/enrolment(s) still reference it`,'err');if(!confirm(`Delete academic session "${label}"?`))return;
+    try{await Api.deleteAcademicSession(id);toast('Academic session deleted');this._academicSessions()}catch(e){toast(e.message,'err')}},
+
+  // ── Courses (catalog: belongs to a curriculum version, reused across
+  //    batches and terms via Course Assignment) ────────────────
   async courses(){
     document.getElementById('view-root').innerHTML=`
-      <div class="page-hd"><div class="page-hd-left"><h1>Courses</h1><div class="hd-sub">All courses across sessions and programs</div></div>
+      <div class="page-hd"><div class="page-hd-left"><h1>Courses</h1><div class="hd-sub">Course catalog, organised by curriculum version</div></div>
         <div class="page-hd-actions"><button class="btn btn-primary" onclick="AdminView._addCourse()">${ico('plus')} Add Course</button></div>
       </div>
       <div class="filter-bar">
         <div class="search-wrap"><input id="cq" placeholder="Search by code or name…" oninput="AdminView._filterC()"></div>
-        <select id="cf-sess" onchange="AdminView._loadC()"><option value="">All Sessions</option></select>
+        <select id="cf-prog" onchange="AdminView._courseProgChanged()"><option value="">All Programs</option></select>
+        <select id="cf-cv" onchange="AdminView._loadC()"><option value="">All Curriculum Versions</option></select>
       </div>
-      <div class="tbl-wrap"><table><thead><tr><th>Code</th><th>Course Name</th><th>Program</th><th>Batch</th><th style="text-align:center">Cr.</th><th>Faculty</th><th class="td-r" style="min-width:180px">Actions</th></tr></thead>
-        <tbody id="ctb">${tdLoad(7)}</tbody></table></div>`;
-    const sess=await Api.getSessions();sess.forEach(s=>{const o=document.createElement('option');o.value=s.id;o.textContent=s.name;document.getElementById('cf-sess').appendChild(o)});
+      <div class="tbl-wrap"><table><thead><tr><th>Code</th><th>Course Name</th><th>Program</th><th>Curriculum Version</th><th style="text-align:center">Cr.</th><th class="td-r" style="min-width:120px">Actions</th></tr></thead>
+        <tbody id="ctb">${tdLoad(6)}</tbody></table></div>`;
+    AdminView._cProgCache=await Api.getPrograms();
+    const sel=document.getElementById('cf-prog');
+    AdminView._cProgCache.forEach(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=`${p.code} - ${p.name}`;sel.appendChild(o)});
+    this._loadC();
+  },
+  async _courseProgChanged(){
+    const programId=document.getElementById('cf-prog').value;
+    const cvSel=document.getElementById('cf-cv');
+    cvSel.innerHTML='<option value="">All Curriculum Versions</option>';
+    if(programId){
+      try{
+        const versions=await Api.getCurriculumVersions(programId);
+        versions.forEach(v=>{const o=document.createElement('option');o.value=v.id;o.textContent=`v${v.version} - ${v.label}`;cvSel.appendChild(o)});
+      }catch(_){}
+    }
     this._loadC();
   },
   async _loadC(){
-    const sid=document.getElementById('cf-sess')?.value;document.getElementById('ctb').innerHTML=tdLoad(7);
-    try{const l=await Api.getCourses(sid?{sessionId:sid}:{});this._cl=l;this._renderC(l)}catch(e){document.getElementById('ctb').innerHTML=tdEmpty(e.message,7)}
+    const curriculumVersionId=document.getElementById('cf-cv')?.value;
+    const programId=document.getElementById('cf-prog')?.value;
+    document.getElementById('ctb').innerHTML=tdLoad(6);
+    try{const l=await Api.getCourses({...(curriculumVersionId&&{curriculumVersionId}),...(programId&&{programId})});this._cl=l;this._renderC(l)}catch(e){document.getElementById('ctb').innerHTML=tdEmpty(e.message,6)}
   },
   _filterC(){const q=document.getElementById('cq').value.toLowerCase();this._renderC((this._cl||[]).filter(c=>c.name.toLowerCase().includes(q)||c.code.toLowerCase().includes(q)))},
   _renderC(list){
     document.getElementById('ctb').innerHTML=list.length?list.map(c=>{
-      const fac=(c.assignments||[]).map(a=>`<span class="tag">${a.faculty.firstName} ${a.faculty.lastName}</span>`).join(' ')||`<span class="tag tag-warn">⚠ Unassigned</span>`;
       const sn=c.name.replace(/'/g,'&#39;');
       return`<tr>
         <td><span class="code-badge">${c.code}</span></td>
         <td class="fw7">${c.name}</td>
         <td><span class="badge bg-gray">${c.program?.code||'-'}</span></td>
-        <td class="text-muted">${c.session?.name||'-'}</td>
+        <td class="text-muted">${c.curriculumVersion?`v${c.curriculumVersion.version} - ${c.curriculumVersion.label}`:'-'}</td>
         <td style="text-align:center;color:var(--text3)">${c.creditHours}</td>
-        <td><div style="display:flex;flex-wrap:wrap;gap:4px">${fac}</div></td>
         <td class="td-r">
           <div style="display:inline-flex;gap:6px">
-            <button class="btn btn-secondary btn-xs" onclick="AdminView._assignFac('${c.id}','${c.code}')">${ico('add_user',13)} Assign</button>
-            <button class="btn btn-secondary btn-xs" onclick="AdminView._openEnrol('${c.id}','${c.code} - ${c.name.replace(/'/g,"&#39;")}')">${ico('users',13)} Enrol</button>
+            <button class="btn btn-secondary btn-xs" onclick="AdminView._editCourse('${c.id}','${sn}','${c.code}',${c.creditHours})">${ico('edit',13)} Edit</button>
             <button class="icon-btn danger" onclick="AdminView._delC('${c.id}','${sn}')" title="Delete course">${ico('trash',13)}</button>
           </div>
         </td></tr>`;
-    }).join(''):tdEmpty('No courses found',7);
+    }).join(''):tdEmpty('No courses found',6);
   },
   async _addCourse(){
-    const[p,s]=await Promise.all([Api.getPrograms(),Api.getSessions()]);
-    showModal('Add Course',`<div class="form-row fr2 mb3"><div class="fg"><label>Program</label><select id="mco-p">${p.map(x=>`<option value="${x.id}">${x.code} - ${x.name}</option>`).join('')}</select></div>
-      <div class="fg"><label>Session / Batch</label><select id="mco-s">${s.map(x=>`<option value="${x.id}">${x.name}</option>`).join('')}</select></div></div>
+    const p=AdminView._cProgCache||await Api.getPrograms();
+    showModal('Add Course',`<div class="fg mb3"><label>Program</label><select id="mco-p" onchange="AdminView._addCourseProgChanged()">${p.map(x=>`<option value="${x.id}">${x.code} - ${x.name}</option>`).join('')}</select></div>
+      <div class="fg mb3"><label>Curriculum Version</label><select id="mco-cv"><option value="">-- select a program first --</option></select></div>
       <div class="form-row fr2"><div class="fg"><label>Course Name</label><input id="mco-n" placeholder="e.g. Artificial Intelligence"></div>
       <div class="fg"><label>Course Code</label><input id="mco-c" placeholder="e.g. ICE-4107"></div></div>
       <div class="fg mt2" style="max-width:120px"><label>Credit Hours</label><input id="mco-cr" type="number" value="3" min="1" max="6"></div>`,
-    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveC()">${ico('save')} Add Course</button>`)},
-  async _saveC(){const d={programId:document.getElementById('mco-p').value,sessionId:document.getElementById('mco-s').value,name:document.getElementById('mco-n').value.trim(),code:document.getElementById('mco-c').value.trim(),creditHours:parseInt(document.getElementById('mco-cr').value)||3};
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveC()">${ico('save')} Add Course</button>`);
+    AdminView._addCourseProgChanged();
+  },
+  async _addCourseProgChanged(){
+    const programId=document.getElementById('mco-p')?.value;
+    const cvSel=document.getElementById('mco-cv');
+    if(!programId||!cvSel)return;
+    cvSel.innerHTML='<option value="">Loading…</option>';
+    try{
+      const versions=await Api.getCurriculumVersions(programId);
+      cvSel.innerHTML=versions.length?versions.map(v=>`<option value="${v.id}">v${v.version} - ${v.label}</option>`).join(''):'<option value="">No curriculum versions - create one first</option>';
+    }catch(e){cvSel.innerHTML=`<option value="">${e.message}</option>`}
+  },
+  async _saveC(){const d={programId:document.getElementById('mco-p').value,curriculumVersionId:document.getElementById('mco-cv').value,name:document.getElementById('mco-n').value.trim(),code:document.getElementById('mco-c').value.trim(),creditHours:parseInt(document.getElementById('mco-cr').value)||3};
     if(!d.name||!d.code)return toast('Name and code required','err');
+    if(!d.curriculumVersionId)return toast('Pick a curriculum version','err');
     try{await Api.createCourse(d);toast('Course added');closeModal();this._loadC()}catch(e){toast(e.message,'err')}},
+  async _editCourse(id,name,code,creditHours){
+    showModal(`Edit - ${code}`,`<div class="form-row fr2"><div class="fg"><label>Course Name</label><input id="mco-n" value="${name}"></div>
+      <div class="fg"><label>Course Code</label><input id="mco-c" value="${code}"></div></div>
+      <div class="fg mt2" style="max-width:120px"><label>Credit Hours</label><input id="mco-cr" type="number" value="${creditHours}" min="1" max="6"></div>`,
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveCourseEdit('${id}')">${ico('save')} Save</button>`)},
+  async _saveCourseEdit(id){const d={name:document.getElementById('mco-n').value.trim(),code:document.getElementById('mco-c').value.trim(),creditHours:parseInt(document.getElementById('mco-cr').value)||3};
+    try{await Api.updateCourse(id,d);toast('Updated');closeModal();this._loadC()}catch(e){toast(e.message,'err')}},
   async _delC(id,name){if(!confirm(`Delete "${name}"?`))return;try{await Api.deleteCourse(id);toast('Deleted');this._loadC()}catch(e){toast(e.message,'err')}},
-  async _openEnrol(courseId, courseLabel) {
+
+  // ── Course Assignment (assign an existing catalog course to a faculty
+  //    for a chosen Academic Session) ──────────────────────────
+  async courseAssignments(){
+    document.getElementById('view-root').innerHTML=`
+      <div class="page-hd"><div class="page-hd-left"><h1>Course Assignment</h1><div class="hd-sub">Assign existing courses to faculty for a specific academic session</div></div>
+        <div class="page-hd-actions"><button class="btn btn-primary" onclick="AdminView._addAssignment()">${ico('plus')} New Assignment</button></div>
+      </div>
+      <div class="filter-bar">
+        <select id="ca-f-sess" onchange="AdminView._loadCA()"><option value="">All Academic Sessions</option></select>
+      </div>
+      <div class="tbl-wrap"><table><thead><tr><th>Course</th><th>Faculty</th><th>Academic Session</th><th class="td-r" style="min-width:160px">Actions</th></tr></thead>
+        <tbody id="catb">${tdLoad(4)}</tbody></table></div>`;
+    try{
+      const sessions=await Api.getAcademicSessions();
+      AdminView._caSessCache=sessions;
+      const sel=document.getElementById('ca-f-sess');
+      const label=t=>t==='JAN_JUN'?'Jan - Jun':'Jul - Dec';
+      sessions.forEach(s=>{const o=document.createElement('option');o.value=s.id;o.textContent=`${label(s.term)} ${s.year}`;sel.appendChild(o)});
+    }catch(_){AdminView._caSessCache=[]}
+    this._loadCA();
+  },
+  async _loadCA(){
+    const academicSessionId=document.getElementById('ca-f-sess')?.value;
+    document.getElementById('catb').innerHTML=tdLoad(4);
+    const label=t=>t==='JAN_JUN'?'Jan - Jun':'Jul - Dec';
+    try{
+      const l=await Api.getCourseAssignments(academicSessionId?{academicSessionId}:{});
+      document.getElementById('catb').innerHTML=l.length?l.map(a=>`<tr>
+        <td><span class="code-badge">${a.course.code}</span> <span class="text-muted">${a.course.name}</span></td>
+        <td class="fw7">${a.faculty.firstName} ${a.faculty.lastName}</td>
+        <td class="text-muted">${label(a.academicSession.term)} ${a.academicSession.year}</td>
+        <td class="td-r"><div style="display:inline-flex;gap:6px">
+          <button class="btn btn-secondary btn-xs" onclick="AdminView._openEnrol('${a.course.id}','${a.academicSession.id}','${a.course.code} - ${a.course.name.replace(/'/g,"&#39;")} (${label(a.academicSession.term)} ${a.academicSession.year})')">${ico('users',13)} Enrol</button>
+          <button class="icon-btn danger" onclick="AdminView._delAssignment('${a.id}')">${ico('trash',13)}</button>
+        </div></td>
+      </tr>`).join(''):tdEmpty('No course assignments yet',4);
+    }catch(e){document.getElementById('catb').innerHTML=tdEmpty(e.message,4)}
+  },
+  async _addAssignment(){
+    const [courses,faculty,sessions]=await Promise.all([Api.getCourses(),Api.getUsers({role:'FACULTY'}),AdminView._caSessCache?.length?AdminView._caSessCache:Api.getAcademicSessions()]);
+    const label=t=>t==='JAN_JUN'?'Jan - Jun':'Jul - Dec';
+    showModal('New Course Assignment',`
+      <div class="fg mb3"><label>Course</label><select id="ca-course">${courses.map(c=>`<option value="${c.id}">${c.code} - ${c.name}</option>`).join('')}</select></div>
+      <div class="fg mb3"><label>Faculty</label><select id="ca-faculty">${faculty.map(f=>`<option value="${f.id}">${f.firstName} ${f.lastName}</option>`).join('')}</select></div>
+      <div class="fg"><label>Academic Session</label><select id="ca-sess">${sessions.map(s=>`<option value="${s.id}">${label(s.term)} ${s.year}</option>`).join('')}</select></div>`,
+    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveAssignment()">${ico('save')} Assign</button>`)},
+  async _saveAssignment(){
+    const d={courseId:document.getElementById('ca-course').value,facultyId:document.getElementById('ca-faculty').value,academicSessionId:document.getElementById('ca-sess').value};
+    try{await Api.createCourseAssignment(d);toast('Assigned');closeModal();this._loadCA()}catch(e){toast(e.message,'err')}},
+  async _delAssignment(id){if(!confirm('Remove this assignment?'))return;
+    try{await Api.deleteCourseAssignment(id);toast('Removed');this._loadCA()}catch(e){toast(e.message,'err')}},
+
+
+  async _openEnrol(courseId, academicSessionId, courseLabel) {
     showModal(`Enrol Students — ${courseLabel}`, `
       <div style="border-bottom:1px solid var(--border);margin-bottom:16px;display:flex;gap:0">
         <button class="tab-btn active" id="en-tab-batch" style="border-radius:0" onclick="AdminView._enrolTab('batch')">By Batch</button>
@@ -214,7 +334,7 @@ const AdminView={
       <!-- Batch pane -->
       <div id="en-pane-batch">
         <div class="form-row fr2 mb3">
-          <div class="fg"><label>Batch / Session</label>
+          <div class="fg"><label>Batch</label>
             <select id="en-batch" style="width:100%">
               <option value="">Select Batch</option>
             </select>
@@ -227,7 +347,7 @@ const AdminView={
             </select>
           </div>
         </div>
-        <button class="btn btn-primary" style="width:100%" onclick="AdminView._enrolBatchModal('${courseId}')">Enrol Batch</button>
+        <button class="btn btn-primary" style="width:100%" onclick="AdminView._enrolBatchModal('${courseId}','${academicSessionId}')">Enrol Batch</button>
       </div>
 
       <!-- Individual pane -->
@@ -238,14 +358,14 @@ const AdminView={
         <div id="en-search-results" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--r);margin-bottom:12px">
           <div class="text-muted text-sm" style="padding:12px">Type to search</div>
         </div>
-        <button class="btn btn-primary" style="width:100%" onclick="AdminView._enrolSelectedModal('${courseId}')">Enrol Selected</button>
+        <button class="btn btn-primary" style="width:100%" onclick="AdminView._enrolSelectedModal('${courseId}','${academicSessionId}')">Enrol Selected</button>
       </div>
 
       <div id="en-modal-result" class="mt3"></div>
 
       <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">
         <div class="flex-between mb2">
-          <span class="sec-title" style="font-size:13px">Currently Enrolled</span>
+          <span class="sec-title" style="font-size:13px">Currently Enrolled (this session)</span>
           <span id="en-modal-count" class="badge bg-blue">...</span>
         </div>
         <div style="max-height:180px;overflow-y:auto">
@@ -264,17 +384,17 @@ const AdminView={
       </div>`, null, true);
 
     AdminView._enrolCourseId = courseId;
+    AdminView._enrolAcademicSessionId = academicSessionId;
     AdminView._enrolSelectedIds = new Set();
 
-    // Load sessions for batch dropdown
+    // Load batches for the batch dropdown (who the students are, separate
+    // from academicSessionId, which is when - already fixed by which
+    // assignment row this modal was opened from).
     try {
-      // Value is the sessionId. It used to strip digits out of the batch name,
-      // which broke as soon as two departments both had a "Batch 2023" and
-      // meant the query could not be scoped to a department at all.
-      const sessions = await Api.getSessions();
+      const batches = await Api.getBatches();
       const sel = document.getElementById('en-batch');
       if(sel) sel.innerHTML = '<option value="">Select Batch</option>' +
-        sessions.map(s=>`<option value="${s.id}" data-dept="${s.departmentId||''}">${esc(s.name)}</option>`).join('');
+        batches.map(s=>`<option value="${s.id}" data-dept="${s.departmentId||''}">${esc(s.name)}</option>`).join('');
     } catch(_) {}
 
     await AdminView._enrolRefreshModal();
@@ -283,31 +403,32 @@ const AdminView={
   // ── Batch roster ─────────────────────────────────────────────
   async _loadBatchRoster() {
     const courseId  = document.getElementById('en-course')?.value;
-    const sessionId = document.getElementById('en-batch')?.value;
+    const academicSessionId = document.getElementById('en-asess')?.value;
+    const batchId = document.getElementById('en-batch')?.value;
     const section   = document.getElementById('en-section')?.value || '';
     const box = document.getElementById('en-roster');
     const sub = document.getElementById('en-roster-sub');
     if (!box) return;
 
     if (!courseId) return toast('Select a course at the top first', 'err');
-    if (!sessionId) return toast('Pick a batch on the left first', 'err');
+    if (!batchId) return toast('Pick a batch on the left first', 'err');
 
     box.innerHTML = '<div class="loading-box" style="padding:14px;justify-content:flex-start"><div class="spin"></div> Loading students…</div>';
 
     try {
-      const opt = document.querySelector(`#en-batch option[value="${sessionId}"]`);
+      const opt = document.querySelector(`#en-batch option[value="${batchId}"]`);
       const batchName = opt?.textContent || 'batch';
 
-      // Student lookup needs two filters. sessionId plus section satisfies it;
-      // sessionId alone would be one, so pass the section explicitly even when
+      // Student lookup needs two filters. batchId plus section satisfies it;
+      // batchId alone would be one, so pass the section explicitly even when
       // it is "all" by falling back to the batch label as the second axis.
-      const params = { role: 'STUDENT', sessionId };
+      const params = { role: 'STUDENT', batchId };
       if (section) params.section = section;
       else params.batchYear = (batchName.match(/\d{4}/) || [''])[0];
 
       const [students, enrolled] = await Promise.all([
         Api.getUsers(params),
-        Api.getEnrolments(courseId),
+        Api.getEnrolments(courseId, academicSessionId),
       ]);
       const already = new Set((enrolled || []).map(e => e.studentId || e.student?.id));
 
@@ -379,6 +500,7 @@ const AdminView={
 
   async _enrolRosterSelected() {
     const courseId = document.getElementById('en-course')?.value;
+    const academicSessionId = document.getElementById('en-asess')?.value;
     if (!courseId) return toast('Select a course first', 'err');
 
     const ids = [...document.querySelectorAll('.roster-chk:checked')].map(c => c.value);
@@ -386,7 +508,7 @@ const AdminView={
 
     const resEl = document.getElementById('en-result');
     try {
-      const r = await Api.enrolStudents({ courseId, studentIds: ids });
+      const r = await Api.enrolStudents({ courseId, studentIds: ids, academicSessionId });
       if (resEl) resEl.innerHTML = `<div class="alert alert-success"><span class="alert-icon">&#10003;</span>Enrolled ${r.enrolled ?? ids.length} student(s).${r.skipped ? ' ' + r.skipped + ' already enrolled.' : ''}</div>`;
       toast(`${r.enrolled ?? ids.length} student(s) enrolled`);
       await AdminView._enrolRefreshList();
@@ -408,9 +530,10 @@ const AdminView={
 
   async _enrolRefreshModal() {
     const courseId = AdminView._enrolCourseId;
+    const academicSessionId = AdminView._enrolAcademicSessionId;
     if(!courseId) return;
     try {
-      const list = await Api.getEnrolments(courseId);
+      const list = await Api.getEnrolments(courseId, academicSessionId);
       const countEl = document.getElementById('en-modal-count');
       const tbody = document.getElementById('en-modal-enrolled');
       if(countEl) countEl.textContent = list.length + ' student' + (list.length===1?'':'s');
@@ -428,13 +551,14 @@ const AdminView={
     }
   },
 
-  async _enrolBatchModal(courseId) {
-    const batchYear = document.getElementById('en-batch')?.value;
+  async _enrolBatchModal(courseId, academicSessionId) {
+    const batchId  = document.getElementById('en-batch')?.value;
     const section   = document.getElementById('en-section')?.value;
     const resEl     = document.getElementById('en-modal-result');
+    if(!batchId) return toast('Pick a batch first','err');
     resEl.innerHTML = `<div class="loading-box" style="padding:8px 0;justify-content:flex-start"><div class="spin"></div> Enrolling…</div>`;
     try {
-      const r = await Api.enrolStudents({ courseId, batchYear, section });
+      const r = await Api.enrolStudents({ courseId, batchId, section, academicSessionId });
       resEl.innerHTML = `<div class="alert alert-success"><span class="alert-icon">✓</span>Enrolled ${r.enrolled} student(s). ${r.skipped} already enrolled.</div>`;
       await AdminView._enrolRefreshModal();
     } catch(e) { resEl.innerHTML=`<div class="alert alert-error"><span class="alert-icon">⚠</span>${e.message}</div>`; }
@@ -464,13 +588,13 @@ const AdminView={
     else AdminView._enrolSelectedIds.delete(id);
   },
 
-  async _enrolSelectedModal(courseId) {
+  async _enrolSelectedModal(courseId, academicSessionId) {
     const ids = [...(AdminView._enrolSelectedIds||[])];
     const resEl = document.getElementById('en-modal-result');
     if(!ids.length) return toast('Select at least one student','err');
     resEl.innerHTML = `<div class="loading-box" style="padding:8px 0;justify-content:flex-start"><div class="spin"></div> Enrolling…</div>`;
     try {
-      const r = await Api.enrolStudents({ courseId, studentIds: ids });
+      const r = await Api.enrolStudents({ courseId, studentIds: ids, academicSessionId });
       resEl.innerHTML = `<div class="alert alert-success"><span class="alert-icon">✓</span>Enrolled ${r.enrolled} student(s). ${r.skipped} already enrolled.</div>`;
       AdminView._enrolSelectedIds = new Set();
       const searchEl = document.getElementById('en-search');
@@ -490,18 +614,8 @@ const AdminView={
     } catch(e) { toast(e.message,'err'); }
   },
 
-  async _assignFac(courseId,code){
-    const users=await Api.getUsers({role:'FACULTY'});
-    const c=(this._cl||[]).find(x=>x.id===courseId);
-    const assigned=new Set((c?.assignments||[]).map(a=>a.faculty.id));
-    showModal(`Assign Faculty - ${code}`,`<div style="display:flex;flex-direction:column;gap:8px;max-height:340px;overflow-y:auto">
-      ${users.map(u=>`<label style="display:flex;align-items:center;gap:12px;padding:11px 13px;border:1.5px solid ${assigned.has(u.id)?'var(--green)':'var(--border)'};border-radius:8px;cursor:pointer;background:${assigned.has(u.id)?'var(--green-xl)':'#fff'};transition:all .12s" onmouseenter="this.style.borderColor='var(--green)'" onmouseleave="this.style.borderColor='${assigned.has(u.id)?'var(--green)':'var(--border)'}'"">
-        <input type="checkbox" value="${u.id}" ${assigned.has(u.id)?'checked':''} style="width:auto;accent-color:var(--green)">
-        <div><div class="fw7">${u.firstName} ${u.lastName}</div><div class="text-sm text-muted">${u.email}</div></div>
-      </label>`).join('')}</div>`,
-    `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-primary" onclick="AdminView._saveAssign('${courseId}')">${ico('save')} Save</button>`)},
-  async _saveAssign(courseId){const ids=[...document.querySelectorAll('#modal-body input[type=checkbox]:checked')].map(c=>c.value);
-    try{await Api.assignFaculty(courseId,ids);toast('Faculty assigned');closeModal();this._loadC()}catch(e){toast(e.message,'err')}},
+
+
 
   // ── Users ──────────────────────────────────────────────────
   async admins(){
@@ -553,11 +667,11 @@ const AdminView={
   },
 
   async students(){
-    // Load departments and sessions for filter dropdowns
+    // Load departments and batches for filter dropdowns
     let deptOptions = '<option value="">Select Department</option>';
     try {
-      const [depts, sessions] = await Promise.all([Api.getDepartments(), Api.getSessions()]);
-      AdminView._stuSessions = sessions;
+      const [depts, batches] = await Promise.all([Api.getDepartments(), Api.getBatches()]);
+      AdminView._stuSessions = batches;
       deptOptions += depts.map(d=>`<option value="${d.id}">${d.name}</option>`).join('');
     } catch(_) { AdminView._stuSessions = []; }
 
@@ -602,11 +716,11 @@ const AdminView={
   async _loadStudents(){
     const el=document.getElementById('utb-students'); if(!el) return;
     const dept=document.getElementById('uf-dept-s')?.value;
-    const sessionId=document.getElementById('uf-batch-s')?.value;
+    const batchId=document.getElementById('uf-batch-s')?.value;
     const section=document.getElementById('uf-section-s')?.value;
 
     // Don't load until at least one filter is chosen
-    if(!dept && !sessionId && !section){
+    if(!dept && !batchId && !section){
       el.innerHTML='<tr><td colspan="7" class="td-load text-muted">Select a department or batch to view students.</td></tr>';
       AdminView._ul_students=[];
       return;
@@ -614,11 +728,11 @@ const AdminView={
     el.innerHTML=tdLoad(7);
     try{
       const params={role:'STUDENT'};
-      if(sessionId) params.sessionId=sessionId;
+      if(batchId) params.batchId=batchId;
       if(section) params.section=section;
       let l=await Api.getUsers(params);
       // Department chosen but no specific batch: keep students whose batch is in that department.
-      if(dept && !sessionId) l=l.filter(u=>u.session?.departmentId===dept);
+      if(dept && !batchId) l=l.filter(u=>u.batch?.departmentId===dept);
       AdminView._ul_students=l;
       AdminView._renderTab('students',l);
     }catch(e){if(el)el.innerHTML=tdEmpty(e.message,7);}
@@ -648,7 +762,7 @@ const AdminView={
       </tr>`).join('');
     } else {
       el.innerHTML=list.map(u=>{
-        const batch=u.session?.name || (u.institutionalId?'Batch 20'+u.institutionalId.substring(0,2):'--');
+        const batch=u.batch?.name || (u.institutionalId?'Batch 20'+u.institutionalId.substring(0,2):'--');
         const sec=u.section?'<span class="badge bg-gray">Section '+u.section+'</span>':'--';
         return `<tr>
           <td class="fw7">${u.firstName} ${u.lastName}</td>
@@ -660,7 +774,7 @@ const AdminView={
           </td>
           <td class="text-muted text-sm">${u.lastLoginAt?new Date(u.lastLoginAt).toLocaleDateString():'Never'}</td>
           <td class="td-r" style="white-space:nowrap">
-            <button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="AdminView._editUser('${u.id}','${u.firstName}','${u.lastName}','${u.email}','${u.role}','${u.institutionalId||''}','${u.section||''}','${u.sessionId||''}')">Edit</button>
+            <button class="btn btn-secondary btn-xs" style="margin-right:4px" onclick="AdminView._editUser('${u.id}','${u.firstName}','${u.lastName}','${u.email}','${u.role}','${u.institutionalId||''}','${u.section||''}','${u.batchId||''}')">Edit</button>
             <button class="btn btn-primary btn-xs" onclick="AdminView._viewStuAtt('${u.id}','${u.firstName} ${u.lastName}')">Attainment</button>
           </td>
         </tr>`;
@@ -674,14 +788,14 @@ const AdminView={
   async enrolment(){
     document.getElementById('view-root').innerHTML=`
       <div class="page-hd">
-        <div class="page-hd-left"><h1>Enrolment</h1><div class="hd-sub">Assign courses to batches or individual students</div></div>
+        <div class="page-hd-left"><h1>Enrolment</h1><div class="hd-sub">Enrol batches or individual students into a course, for a chosen academic session</div></div>
       </div>
       <div class="card mb4"><div class="card-bd">
-        <div class="sec-title mb3">Select Course</div>
+        <div class="sec-title mb3">Select Academic Session and Course</div>
         <div class="filter-bar" style="margin-bottom:0">
-          <div class="fg" style="flex:2;margin:0"><label>Session / Batch</label>
-            <select id="en-sess" onchange="AdminView._enrolLoadCourses()" style="width:100%">
-              <option value="">-- Select Session --</option>
+          <div class="fg" style="flex:2;margin:0"><label>Academic Session</label>
+            <select id="en-asess" onchange="AdminView._enrolLoadCourses()" style="width:100%">
+              <option value="">-- Select Academic Session --</option>
             </select>
           </div>
           <div class="fg" style="flex:3;margin:0"><label>Course</label>
@@ -709,7 +823,7 @@ const AdminView={
             </div>
 
             <div id="en-pane-batch">
-              <div class="fg mb3"><label>Batch Year</label>
+              <div class="fg mb3"><label>Batch</label>
                 <select id="en-batch" style="width:100%" onchange="AdminView._rosterStale()">
                   <option value="">Select Batch</option>
                 </select>
@@ -778,32 +892,43 @@ const AdminView={
         </div></div>
       </div>`;
 
-    // Load sessions. Top dropdown selects a session to list its courses.
-    // The Batch dropdown carries the session id, so batch enrolment matches
-    // on the batch link (department-safe) instead of ID digits.
+    // Academic Session picks which term's courses to show (via Course
+    // Assignment); Batch picks which cohort of students to bulk-enrol.
+    // These are two different axes now, where they used to be the same
+    // dropdown.
     try {
-      const sessions = await Api.getSessions();
-      const sel = document.getElementById('en-sess');
-      if(sel) sel.innerHTML = '<option value="">-- Select Session --</option>' +
-        sessions.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
+      const acadSessions = await Api.getAcademicSessions();
+      const label = t=>t==='JAN_JUN'?'Jan - Jun':'Jul - Dec';
+      const sel = document.getElementById('en-asess');
+      if(sel) sel.innerHTML = '<option value="">-- Select Academic Session --</option>' +
+        acadSessions.map(s=>`<option value="${s.id}">${label(s.term)} ${s.year}</option>`).join('');
+    } catch(e) {}
 
+    try {
+      const batches = await Api.getBatches();
       const bSel = document.getElementById('en-batch');
       if(bSel) bSel.innerHTML = '<option value="">Select Batch</option>' +
-        sessions.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
+        batches.map(s=>`<option value="${s.id}">${s.name}</option>`).join('');
     } catch(e) {}
 
     AdminView._enrolSelectedIds = new Set();
   },
 
   async _enrolLoadCourses(){
-    const sessId = document.getElementById('en-sess')?.value;
+    const academicSessionId = document.getElementById('en-asess')?.value;
     const courseSel = document.getElementById('en-course');
     if(!courseSel) return;
-    if(!sessId){ courseSel.innerHTML='<option value="">-- Select Course --</option>'; return; }
+    if(!academicSessionId){ courseSel.innerHTML='<option value="">-- Select Course --</option>'; return; }
     try{
-      const courses = await Api.getCourses({ sessionId: sessId });
-      courseSel.innerHTML = '<option value="">-- Select Course --</option>' +
-        courses.map(c=>`<option value="${c.id}">${c.code} - ${c.name}</option>`).join('');
+      // Only courses actually assigned to a faculty for this term show up
+      // here; a catalog course with no assignment yet has nobody to be
+      // enrolled under.
+      const assignments = await Api.getCourseAssignments({ academicSessionId });
+      const seen = new Set();
+      const courses = assignments.filter(a=>{ if(seen.has(a.course.id)) return false; seen.add(a.course.id); return true; }).map(a=>a.course);
+      courseSel.innerHTML = courses.length
+        ? '<option value="">-- Select Course --</option>' + courses.map(c=>`<option value="${c.id}">${c.code} - ${c.name}</option>`).join('')
+        : '<option value="">No courses assigned for this session yet</option>';
       document.getElementById('en-main').style.display='none';
     }catch(e){ toast(e.message,'err'); }
   },
@@ -817,12 +942,13 @@ const AdminView={
 
   async _enrolRefreshList(){
     const courseId = document.getElementById('en-course')?.value;
+    const academicSessionId = document.getElementById('en-asess')?.value;
     if(!courseId) return;
     const tbody = document.getElementById('en-enrolled');
     const countEl = document.getElementById('en-count');
     if(tbody) tbody.innerHTML = tdLoad(4);
     try{
-      const list = await Api.getEnrolments(courseId);
+      const list = await Api.getEnrolments(courseId, academicSessionId);
       if(countEl) countEl.textContent = list.length + ' student' + (list.length===1?'':'s');
       if(!tbody) return;
       if(!list.length){ tbody.innerHTML=tdEmpty('No students enrolled yet',4); return; }
@@ -844,7 +970,8 @@ const AdminView={
 
   async _enrolBatch(){
     const courseId = document.getElementById('en-course')?.value;
-    const sessionId = document.getElementById('en-batch')?.value;
+    const academicSessionId = document.getElementById('en-asess')?.value;
+    const batchId = document.getElementById('en-batch')?.value;
     const section = document.getElementById('en-section')?.value;
     const resEl = document.getElementById('en-result');
     if(!courseId) return toast('Select a course first','err');
@@ -853,13 +980,13 @@ const AdminView={
     // institution, so "Batch 2026, all sections" quietly enrolled section A of
     // every other batch as well. The server refuses this now; the client should
     // not send it in the first place.
-    if(!sessionId) return toast('Pick a batch first. Without one this would enrol every student in the institution.','err');
+    if(!batchId) return toast('Pick a batch first. Without one this would enrol every student in the institution.','err');
 
-    const batchLabel = document.querySelector(`#en-batch option[value="${sessionId}"]`)?.textContent || 'this batch';
+    const batchLabel = document.querySelector(`#en-batch option[value="${batchId}"]`)?.textContent || 'this batch';
     if(!confirm(`Enrol ${section ? 'Section '+section+' of ' : 'all sections of '}${batchLabel} into this course?`)) return;
     resEl.innerHTML=`<div class="loading-box" style="padding:8px 0;justify-content:flex-start"><div class="spin"></div> Enrolling...</div>`;
     try{
-      const r = await Api.enrolStudents({ courseId, sessionId, section });
+      const r = await Api.enrolStudents({ courseId, batchId, section, academicSessionId });
       resEl.innerHTML=`<div class="alert alert-success"><span class="alert-icon">✓</span>Enrolled ${r.enrolled} student(s). ${r.skipped} already enrolled.</div>`;
       await AdminView._enrolRefreshList();
     }catch(e){ resEl.innerHTML=`<div class="alert alert-error"><span class="alert-icon">⚠</span>${e.message}</div>`; }
@@ -893,13 +1020,14 @@ const AdminView={
 
   async _enrolSelected(){
     const courseId = document.getElementById('en-course')?.value;
+    const academicSessionId = document.getElementById('en-asess')?.value;
     const resEl = document.getElementById('en-result');
     const ids = [...(AdminView._enrolSelectedIds||[])];
     if(!courseId) return toast('Select a course first','err');
     if(!ids.length) return toast('Select at least one student','err');
     resEl.innerHTML=`<div class="loading-box" style="padding:8px 0;justify-content:flex-start"><div class="spin"></div> Enrolling...</div>`;
     try{
-      const r = await Api.enrolStudents({ courseId, studentIds: ids });
+      const r = await Api.enrolStudents({ courseId, studentIds: ids, academicSessionId });
       resEl.innerHTML=`<div class="alert alert-success"><span class="alert-icon">✓</span>Enrolled ${r.enrolled} student(s). ${r.skipped} already enrolled.</div>`;
       AdminView._enrolSelectedIds = new Set();
       document.getElementById('en-search').value='';
@@ -1051,7 +1179,7 @@ const AdminView={
     try{await Api.deleteProgramOutcome(id);toast('Deleted');this._loadPOs()}catch(e){toast(e.message,'err')}},
 
   // ── Thresholds ─────────────────────────────────────────────
-  _editUser(id, firstName, lastName, email, role, institutionalId, section, sessionId) {
+  _editUser(id, firstName, lastName, email, role, institutionalId, section, batchId) {
     const isStudent = role === 'STUDENT';
     showModal('Edit User', `
       <div class="form-row fr2 mb3">
@@ -1084,14 +1212,14 @@ const AdminView={
     );
     if (isStudent) {
       setTimeout(() => {
-        Promise.all([Api.getDepartments(), Api.getSessions()]).then(([depts, sessions]) => {
-          AdminView._euSessions = sessions;
-          const cur = sessions.find(s => s.id === sessionId);
+        Promise.all([Api.getDepartments(), Api.getBatches()]).then(([depts, batches]) => {
+          AdminView._euSessions = batches;
+          const cur = batches.find(s => s.id === batchId);
           const curDept = cur ? cur.departmentId : '';
           const dSel = document.getElementById('eu-dept');
           if (dSel) dSel.innerHTML = '<option value="">-- Select --</option>' +
             depts.map(d => '<option value="' + d.id + '" ' + (d.id===curDept?'selected':'') + '>' + d.name + '</option>').join('');
-          AdminView._euFillBatches(sessionId);
+          AdminView._euFillBatches(batchId);
         }).catch(() => {});
       }, 50);
     }
@@ -1101,9 +1229,9 @@ const AdminView={
     const dept = document.getElementById('eu-dept')?.value;
     const bSel = document.getElementById('eu-batch');
     if (!bSel) return;
-    const sessions = (AdminView._euSessions || []).filter(s => s.departmentId === dept);
+    const batches = (AdminView._euSessions || []).filter(s => s.departmentId === dept);
     bSel.innerHTML = dept
-      ? ('<option value="">-- Unassigned --</option>' + sessions.map(s => '<option value="' + s.id + '" ' + (s.id===preselect?'selected':'') + '>' + s.name + '</option>').join(''))
+      ? ('<option value="">-- Unassigned --</option>' + batches.map(s => '<option value="' + s.id + '" ' + (s.id===preselect?'selected':'') + '>' + s.name + '</option>').join(''))
       : '<option value="">-- Select department first --</option>';
   },
 
@@ -1117,7 +1245,7 @@ const AdminView={
     if (role === 'STUDENT') {
       d.institutionalId = document.getElementById('eu-id')?.value.trim() || null;
       d.section = document.getElementById('eu-sec')?.value || null;
-      d.sessionId = document.getElementById('eu-batch')?.value || null;
+      d.batchId = document.getElementById('eu-batch')?.value || null;
     }
     if (pw) d.password = pw;
     if (!d.firstName || !d.lastName || !d.email) return toast('Name and email required', 'err');
@@ -1138,9 +1266,9 @@ const AdminView={
       <div class="fg"><label>Batch (for students)</label><select id="bulk-batch"><option value="">-- Select department first --</option></select></div>
     </div>
     <div class="fg mb3"><label>Download Template</label><button class="btn btn-secondary btn-sm" onclick="AdminView._dlTemplate()">${ico('dl',13)} CSV Template</button></div><div class="fg"><label>Upload File (CSV or Excel)</label><input type="file" id="bulk-file" accept=".csv,.xlsx,.xls" style="padding:8px"></div><div id="bulk-preview" class="mt3"></div>`,`<button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-secondary" onclick="AdminView._parseFile()">${ico('edit')} Parse File</button><button class="btn btn-primary" onclick="AdminView._confirmBulk()">${ico('save')} Confirm Upload</button>`);
-    setTimeout(()=>{Promise.all([Api.getDepartments(),Api.getSessions()]).then(([depts,sessions])=>{AdminView._bulkSessions=sessions;const d=document.getElementById('bulk-dept');if(d)d.innerHTML='<option value="">-- None --</option>'+depts.map(x=>'<option value="'+x.id+'">'+x.name+'</option>').join('');}).catch(()=>{});},50);
+    setTimeout(()=>{Promise.all([Api.getDepartments(),Api.getBatches()]).then(([depts,batches])=>{AdminView._bulkSessions=batches;const d=document.getElementById('bulk-dept');if(d)d.innerHTML='<option value="">-- None --</option>'+depts.map(x=>'<option value="'+x.id+'">'+x.name+'</option>').join('');}).catch(()=>{});},50);
   },
-  _bulkFillBatches(){const dept=document.getElementById('bulk-dept')?.value;const b=document.getElementById('bulk-batch');if(!b)return;const ss=(AdminView._bulkSessions||[]).filter(s=>s.departmentId===dept);b.innerHTML=dept?('<option value="">-- Unassigned --</option>'+ss.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('')):'<option value="">-- Select department first --</option>';},
+  _bulkFillBatches(){const dept=document.getElementById('bulk-dept')?.value;const b=document.getElementById('bulk-batch');if(!b)return;const bb=(AdminView._bulkSessions||[]).filter(s=>s.departmentId===dept);b.innerHTML=dept?('<option value="">-- Unassigned --</option>'+bb.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('')):'<option value="">-- Select department first --</option>';},
   _dlTemplate(){const csv='firstName,lastName,email,role,institutionalId,section\nJohn,Doe,john@bup.edu.bd,STUDENT,23549009999,A\nJane,Smith,jane@bup.edu.bd,STUDENT,23549009998,B\nProf,Khan,prof@bup.edu.bd,FACULTY,,';const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='users_template.csv';a.click();},
   async _parseFile(){
     const file=document.getElementById('bulk-file')?.files[0];if(!file)return toast('Select a file','err');
@@ -1156,8 +1284,8 @@ const AdminView={
     }catch(e){preview.innerHTML='<div class="alert alert-error"><span class="alert-icon">!</span>'+e.message+'</div>';}
   },
   async _confirmBulk(){const users=window._bulkUsers;if(!users||!users.length)return toast('Parse a file first','err');
-    const sessionId=document.getElementById('bulk-batch')?.value||null;
-    try{const res=await Api.bulkCreateUsers(users,sessionId);toast('Created: '+res.created+', Updated: '+(res.updated||0)+(res.skipped?', Skipped: '+res.skipped:'')+(res.errors.length?', Errors: '+res.errors.length:''),'ok');closeModal();window._bulkUsers=null;this._loadU();}catch(e){toast(e.message,'err');}},
+    const batchId=document.getElementById('bulk-batch')?.value||null;
+    try{const res=await Api.bulkCreateUsers(users,batchId);toast('Created: '+res.created+', Updated: '+(res.updated||0)+(res.skipped?', Skipped: '+res.skipped:'')+(res.errors.length?', Errors: '+res.errors.length:''),'ok');closeModal();window._bulkUsers=null;this._loadU();}catch(e){toast(e.message,'err');}},
   _addUser(forceRole) {
     const roleLabel = forceRole === 'ADMIN' ? 'Admin' : forceRole === 'FACULTY' ? 'Faculty' : 'Student';
     const isStudent = forceRole === 'STUDENT' || !forceRole;
@@ -1200,8 +1328,8 @@ const AdminView={
     );
     if (isStudent) {
       setTimeout(() => {
-        Promise.all([Api.getDepartments(), Api.getSessions()]).then(([depts, sessions]) => {
-          AdminView._muSessions = sessions;
+        Promise.all([Api.getDepartments(), Api.getBatches()]).then(([depts, batches]) => {
+          AdminView._muSessions = batches;
           const dSel = document.getElementById('mu-dept');
           if (dSel) dSel.innerHTML = '<option value="">-- Select --</option>' +
             depts.map(d => '<option value="' + d.id + '">' + d.name + '</option>').join('');
@@ -1210,14 +1338,14 @@ const AdminView={
     }
   },
 
-  // Fill the batch dropdown with sessions belonging to the chosen department.
+  // Fill the batch dropdown with batches belonging to the chosen department.
   _muFillBatches() {
     const dept = document.getElementById('mu-dept')?.value;
     const bSel = document.getElementById('mu-batch');
     if (!bSel) return;
-    const sessions = (AdminView._muSessions || []).filter(s => s.departmentId === dept);
+    const batches = (AdminView._muSessions || []).filter(s => s.departmentId === dept);
     bSel.innerHTML = dept
-      ? ('<option value="">-- Unassigned --</option>' + sessions.map(s => '<option value="' + s.id + '">' + s.name + '</option>').join(''))
+      ? ('<option value="">-- Unassigned --</option>' + batches.map(s => '<option value="' + s.id + '">' + s.name + '</option>').join(''))
       : '<option value="">-- Select department first --</option>';
   },
 
@@ -1228,7 +1356,7 @@ const AdminView={
     const role    = document.getElementById('mu-role').value;
     const instId  = document.getElementById('mu-id')?.value.trim();
     const section = role === 'STUDENT' ? (document.getElementById('mu-section')?.value || null) : null;
-    const sessionId = role === 'STUDENT' ? (document.getElementById('mu-batch')?.value || null) : null;
+    const batchId = role === 'STUDENT' ? (document.getElementById('mu-batch')?.value || null) : null;
     const password = document.getElementById('mu-pw')?.value.trim();
     const d = {
       firstName:       document.getElementById('mu-fn').value.trim(),
@@ -1237,7 +1365,7 @@ const AdminView={
       role,
       institutionalId: instId || null,
       section,
-      sessionId,
+      batchId,
       password:        password || undefined,
     };
     if (!d.firstName || !d.lastName || !d.email) return toast('Name and email required', 'err');
@@ -1257,8 +1385,8 @@ const AdminView={
   async attainmentReport(){
     document.getElementById('view-root').innerHTML=`<div class="page-hd"><div class="page-hd-left"><h1>Attainment Report</h1><div class="hd-sub">CO/PO attainment by batch and department</div></div></div>${loading()}`;
     try{
-      const [sessions,depts,progs]=await Promise.all([Api.getSessions(),Api.getDepartments(),Api.getPrograms()]);
-      AdminView._arData = { sessions, progs };
+      const [batches,depts,progs]=await Promise.all([Api.getBatches(),Api.getDepartments(),Api.getPrograms()]);
+      AdminView._arData = { sessions: batches, progs };
       document.getElementById('view-root').innerHTML=`
         <div class="page-hd"><div class="page-hd-left"><h1>Attainment Report</h1><div class="hd-sub">Cohort figures by program, and individual student reports</div></div></div>
 
@@ -1395,7 +1523,7 @@ const AdminView={
 
     el.innerHTML=loading();
     try{
-      const filters={ departmentId: deptId, programId: progId, sessionId: sessId };
+      const filters={ departmentId: deptId, programId: progId, batchId: sessId };
 
       const{coSummary,poSummary}=await Api.getAttainmentReport(filters);
       if(!coSummary.length&&!poSummary.length){
@@ -1470,7 +1598,7 @@ const AdminView={
     try{
       const d = await Api.getStudentAttainmentAdmin(studentId);
       const stu = d.student || {};
-      const batch = stu.session?.name || (stu.institutionalId ? 'Batch 20'+stu.institutionalId.substring(0,2) : '--');
+      const batch = stu.batch?.name || (stu.institutionalId ? 'Batch 20'+stu.institutionalId.substring(0,2) : '--');
       const sec   = stu.section ? 'Section '+stu.section : '--';
 
       const coByGroup = {};
@@ -1612,7 +1740,7 @@ const AdminView={
   _exportStuPDF(studentId, name){
     const d = AdminView._lastStuReport; if(!d) return;
     const stu=d.student;
-    const batch=stu.session?.name || (stu.institutionalId?'Batch 20'+stu.institutionalId.substring(0,2):'--');
+    const batch=stu.batch?.name || (stu.institutionalId?'Batch 20'+stu.institutionalId.substring(0,2):'--');
     const win=window.open('','_blank');
     const poRows=d.poAttainments.map(r=>{
       const ass=(r.assessed != null ? r.assessed : r.percentage != null);

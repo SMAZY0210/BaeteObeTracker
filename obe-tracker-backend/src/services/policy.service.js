@@ -57,28 +57,31 @@ async function getPolicyForCourse(courseId, at = new Date()) {
 }
 
 /**
- * A session that has been CLOSED freezes its policy. Reopening history and
+ * A batch that has been CLOSED freezes its policy. Reopening history and
  * silently rescoring a graduated cohort is the kind of thing that ends an
  * accreditation conversation badly.
  */
-async function getPolicyForSession(sessionId) {
-  const session = await prisma.session.findUnique({
-    where: { id: sessionId },
+async function getPolicyForBatch(batchId) {
+  const batch = await prisma.batch.findUnique({
+    where: { id: batchId },
     select: { id: true, status: true, frozenThresholds: true, departmentId: true, endDate: true },
   });
-  if (!session) throw new Error(`Session ${sessionId} not found`);
+  if (!batch) throw new Error(`Batch ${batchId} not found`);
 
-  if (session.status === 'CLOSED' && session.frozenThresholds) {
-    return { ...DEFAULT_POLICY, ...session.frozenThresholds, frozen: true };
+  if (batch.status === 'CLOSED' && batch.frozenThresholds) {
+    return { ...DEFAULT_POLICY, ...batch.frozenThresholds, frozen: true };
   }
 
-  const course = await prisma.course.findFirst({
-    where: { sessionId },
+  // Batch has no programId of its own (a batch can in principle enrol
+  // students across more than one program via Course.programId); the
+  // program comes from any of this batch's students' own enrolments.
+  const enrolment = await prisma.enrolment.findFirst({
+    where: { student: { batchId } },
     select: { programId: true },
   });
-  if (!course) return { ...DEFAULT_POLICY, unapproved: true };
+  if (!enrolment) return { ...DEFAULT_POLICY, unapproved: true };
 
-  return getPolicyForProgram(course.programId, session.endDate ?? new Date());
+  return getPolicyForProgram(enrolment.programId, batch.endDate ?? new Date());
 }
 
 function invalidate(programId) {
@@ -135,7 +138,7 @@ async function createPolicyVersion(programId, data, approvedBy) {
 module.exports = {
   getPolicyForProgram,
   getPolicyForCourse,
-  getPolicyForSession,
+  getPolicyForBatch,
   createPolicyVersion,
   invalidate,
 };

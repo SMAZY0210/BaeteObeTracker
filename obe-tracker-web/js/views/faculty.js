@@ -5,21 +5,41 @@ const FacultyView = {
   async courses() {
     document.getElementById('view-root').innerHTML = `
       <div class="page-hd"><div class="page-hd-left"><h1>My Courses</h1><div class="hd-sub">Courses assigned to you</div></div></div>
+      <div class="filter-bar">
+        <select id="fc-sess" onchange="FacultyView._loadCourses()"><option value="">All Academic Sessions</option></select>
+      </div>
       <div id="fac-list">${loading()}</div>`;
     try {
-      const list = await Api.getMyCourses();
+      const sessions = await Api.getAcademicSessions();
+      const label = t=>t==='JAN_JUN'?'Jan - Jun':'Jul - Dec';
+      const sel = document.getElementById('fc-sess');
+      sessions.forEach(s=>{const o=document.createElement('option');o.value=s.id;o.textContent=`${label(s.term)} ${s.year}`;sel.appendChild(o)});
+    } catch(_) {}
+    this._loadCourses();
+  },
+
+  async _loadCourses() {
+    const academicSessionId = document.getElementById('fc-sess')?.value;
+    const listEl = document.getElementById('fac-list');
+    listEl.innerHTML = loading();
+    const label = t=>t==='JAN_JUN'?'Jan - Jun':'Jul - Dec';
+    try {
+      const list = await Api.getMyCourses(academicSessionId);
       if (!list.length) {
-        document.getElementById('fac-list').innerHTML = `<div class="empty-box"><div class="empty-ico">${ico('book',24)}</div><h3>No courses assigned</h3><p>Contact your administrator.</p></div>`;
+        listEl.innerHTML = `<div class="empty-box"><div class="empty-ico">${ico('book',24)}</div><h3>No courses assigned</h3><p>${academicSessionId?'Nothing for this session. Try another one, or contact your administrator.':'Contact your administrator.'}</p></div>`;
         return;
       }
-      document.getElementById('fac-list').innerHTML = `<div class="course-grid">${list.map(c => `
+      listEl.innerHTML = `<div class="course-grid">${list.map(c => {
+        const sessLabel = [...new Set((c.assignments||[]).map(a=>a.academicSession?`${label(a.academicSession.term)} ${a.academicSession.year}`:null).filter(Boolean))].join(', ');
+        return `
         <div class="course-card" onclick="FacultyView._openC('${c.id}','${c.name.replace(/'/g,'&#39;')}','${c.code}')">
           <div class="cc-icon">${ico('book',18)}</div>
           <div class="cc-code">${c.code}</div>
           <div class="cc-name">${c.name}</div>
-          <div class="cc-meta"><span>${c.session?.name||''}</span><span>${c.creditHours||''} cr.</span></div>
-        </div>`).join('')}</div>`;
-    } catch(e) { document.getElementById('fac-list').innerHTML = `<div class="alert alert-error"><span class="alert-icon">⚠</span>${e.message}</div>`; }
+          <div class="cc-meta"><span>${sessLabel}</span><span>${c.creditHours||''} cr.</span></div>
+        </div>`;
+      }).join('')}</div>`;
+    } catch(e) { listEl.innerHTML = `<div class="alert alert-error"><span class="alert-icon">⚠</span>${e.message}</div>`; }
   },
 
   _editCourse(id, name, code, creditHours) {
@@ -973,7 +993,7 @@ const FacultyView = {
         '<th style="' + ths + ';text-align:right">Report</th>' +
       '</tr></thead><tbody>' +
       students.map((s, i) => {
-        const batch = s.session?.name || (s.institutionalId ? 'Batch 20' + s.institutionalId.substring(0,2) : '--');
+        const batch = s.batch?.name || (s.institutionalId ? 'Batch 20' + s.institutionalId.substring(0,2) : '--');
         const sec   = s.section ? 'Section ' + s.section : '--';
         return '<tr style="background:' + (i%2?'var(--surface2)':'var(--surface)') + '">' +
           '<td style="padding:9px 12px;color:var(--text3);border-bottom:1px solid var(--border)">' + (i+1) + '</td>' +
@@ -1104,7 +1124,7 @@ const FacultyView = {
     const d = FacultyView._lastStuReport; if(!d) return toast('Open a student report first','err');
     const stu=d.student||{};
     const name=(stu.firstName||'')+' '+(stu.lastName||'');
-    const batch=stu.session?.name || (stu.institutionalId?'Batch 20'+stu.institutionalId.substring(0,2):'--');
+    const batch=stu.batch?.name || (stu.institutionalId?'Batch 20'+stu.institutionalId.substring(0,2):'--');
     const win=window.open('','_blank');
     const poRows=(d.poAttainments||[]).map(r=>{const att=r.attained;return`<tr><td><b>${r.programOutcome.code}</b></td><td>${r.programOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');
     const coRows=(d.coAttainments||[]).map(r=>{const att=r.attained;return`<tr><td><b>${r.courseOutcome.code}</b></td><td>${r.courseOutcome.title}</td><td style="text-align:center;color:${att?'#16a34a':'#dc2626'};font-weight:700">${att?'Attained':'Not Attained'}</td><td style="text-align:right">${r.percentage.toFixed(1)}%</td></tr>`;}).join('');

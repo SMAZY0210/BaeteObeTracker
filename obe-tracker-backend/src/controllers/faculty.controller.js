@@ -3,20 +3,32 @@ const { recomputeAttainmentForCourse } = require('../services/attainment.service
 const { getPolicyForCourse } = require('../services/policy.service');
 
 // ── My Courses ───────────────────────────────────────────────
+// Filterable by academicSessionId ("show me what I'm teaching this term").
+// Admin without the filter sees the whole catalog; a faculty member without
+// the filter sees every term they've ever been assigned to a course.
 const getMyCourses = async (req, res, next) => {
   try {
     const { userId, role, institutionId } = req.user;
+    const { academicSessionId } = req.query;
+    const assignmentFilter = { facultyId: userId, ...(academicSessionId && { academicSessionId }) };
     const where = {
       deletedAt: null,
       program: { department: { institutionId } },
-      ...(role !== 'ADMIN' && { assignments: { some: { facultyId: userId } } }),
+      ...(role !== 'ADMIN' && { assignments: { some: assignmentFilter } }),
+      ...(role === 'ADMIN' && academicSessionId && { assignments: { some: { academicSessionId } } }),
     };
     const courses = await prisma.course.findMany({
       where,
       include: {
         program: { select: { name: true, code: true } },
-        session: { select: { name: true, status: true } },
-        assignments: { include: { faculty: { select: { id: true, firstName: true, lastName: true, email: true } } } },
+        curriculumVersion: { select: { id: true, label: true, version: true } },
+        assignments: {
+          where: academicSessionId ? { academicSessionId } : undefined,
+          include: {
+            faculty: { select: { id: true, firstName: true, lastName: true, email: true } },
+            academicSession: { select: { id: true, term: true, year: true } },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -938,7 +950,7 @@ const getCourseStudents = async (req, res, next) => {
       where: { id: { in: studentIds } },
       select: {
         id: true, firstName: true, lastName: true,
-        institutionalId: true, section: true,
+        institutionalId: true, section: true, batch: { select: { name: true } },
       },
       orderBy: { institutionalId: 'asc' },
     });
@@ -954,7 +966,7 @@ const getStudentAttainment = async (req, res, next) => {
     const [student, coAttainments, poAttainments, assessments] = await Promise.all([
       prisma.user.findUnique({
         where: { id: studentId },
-        select: { id: true, firstName: true, lastName: true, institutionalId: true, section: true },
+        select: { id: true, firstName: true, lastName: true, institutionalId: true, section: true, batch: { select: { name: true } } },
       }),
       prisma.coAttainment.findMany({
         where: { courseId, studentId },

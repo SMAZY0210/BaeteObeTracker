@@ -22,7 +22,7 @@ const {
   computeCohortPoAttainment,
   deriveCqiFindings,
 } = require('../utils/attainment');
-const { getPolicyForCourse, getPolicyForSession } = require('./policy.service');
+const { getPolicyForCourse, getPolicyForBatch } = require('./policy.service');
 
 const BATCH = 50;
 
@@ -197,18 +197,33 @@ async function recomputeAttainmentForCourse(courseId, matrixVersion, _institutio
 /**
  * Cohort rollup for a graduating batch. s.5.2.5 wants attainment demonstrated
  * by graduation, which is a claim about a batch and not about a course.
- * Run this when a session closes.
+ * Run this when a batch closes.
+ *
+ * A batch no longer owns a fixed set of courses (courses now live at the
+ * curriculum level and get reused across many batches and terms), so the
+ * courses this batch took are whatever its students' own PoAttainment rows
+ * say, not a course list read off the batch itself. PoAttainment is already
+ * student-scoped, so filtering by studentId is sufficient on its own.
  */
-async function recomputeCohortAttainment(sessionId) {
-  const session = await prisma.session.findUnique({
-    where: { id: sessionId },
-    include: { students: { select: { id: true } }, courses: { select: { id: true, programId: true } } },
+async function recomputeCohortAttainment(batchId) {
+  const batch = await prisma.batch.findUnique({
+    where: { id: batchId },
+    include: { students: { select: { id: true } } },
   });
-  if (!session || !session.courses.length) return { skipped: 'no courses' };
+  if (!batch || !batch.students.length) return { skipped: 'no students' };
 
-  const programId = session.courses[0].programId;
-  const policy = await getPolicyForSession(sessionId);
-  const studentIds = session.students.map((s) => s.id);
+  const studentIds = batch.students.map((s) => s.id);
+
+  // program comes from any enrolment these students have, same derivation
+  // getPolicyForBatch uses, since Batch itself carries no programId.
+  const anyEnrolment = await prisma.enrolment.findFirst({
+    where: { studentId: { in: studentIds } },
+    select: { programId: true },
+  });
+  if (!anyEnrolment) return { skipped: 'no enrolments' };
+  const programId = anyEnrolment.programId;
+
+  const policy = await getPolicyForBatch(batchId);
 
   const pos = await prisma.programOutcome.findMany({
     where: { programId, deletedAt: null },
@@ -216,7 +231,7 @@ async function recomputeCohortAttainment(sessionId) {
   });
 
   const rows = await prisma.poAttainment.findMany({
-    where: { studentId: { in: studentIds }, courseId: { in: session.courses.map((c) => c.id) } },
+    where: { studentId: { in: studentIds } },
     select: { programOutcomeId: true, studentId: true, percentage: true, attained: true },
   });
 
@@ -233,7 +248,7 @@ async function recomputeCohortAttainment(sessionId) {
 
     const result = computeCohortPoAttainment({
       programId,
-      sessionId,
+      batchId,
       programOutcomeId: po.id,
       studentResults: perStudent,
       cohortSize: studentIds.length,
@@ -246,14 +261,14 @@ async function recomputeCohortAttainment(sessionId) {
   await flush(
     results.map((r) =>
       prisma.cohortPoAttainment.upsert({
-        where: { sessionId_programOutcomeId: { sessionId, programOutcomeId: r.programOutcomeId } },
+        where: { batchId_programOutcomeId: { batchId, programOutcomeId: r.programOutcomeId } },
         create: { ...r, policyVersion: policy.version },
         update: { ...r, policyVersion: policy.version, computedAt: new Date() },
       })
     )
   );
 
-  await createCqiCandidates({ programId, cohortPoResults: results, cycleLabel: session.name });
+  await createCqiCandidates({ programId, cohortPoResults: results, cycleLabel: batch.name });
 
   return { pos: results.length, notAttained: results.filter((r) => !r.attained).length };
 }

@@ -238,7 +238,7 @@ function computeStudentPoAttainment({ studentId, programOutcomeId, mappings, coR
  * indirect evidence, and the flag rides along with the result so a report can
  * never silently present survey data as attainment.
  */
-function computeCohortPoAttainment({ programId, sessionId, programOutcomeId, studentResults, cohortSize, policy, directOnly = true }) {
+function computeCohortPoAttainment({ programId, batchId, programOutcomeId, studentResults, cohortSize, policy, directOnly = true }) {
   const p = resolvePolicy(policy);
   const assessed = studentResults.filter(Boolean);
   const attainedCount = assessed.filter((r) => r.attained).length;
@@ -246,7 +246,7 @@ function computeCohortPoAttainment({ programId, sessionId, programOutcomeId, stu
 
   return {
     programId,
-    sessionId,
+    batchId,
     programOutcomeId,
     cohortSize,
     assessedCount: assessed.length,

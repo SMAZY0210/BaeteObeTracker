@@ -32,18 +32,28 @@ router.post('/programs/:programId/outcomes', c.createProgramOutcome);
 router.put('/outcomes/:id', c.updateProgramOutcome);
 router.delete('/outcomes/:id', c.deleteProgramOutcome);
 
-// Sessions
-router.get('/sessions', c.getSessions);
-router.post('/sessions', c.createSession);
-router.put('/sessions/:id', c.updateSession);
-router.delete('/sessions/:id', c.deleteSession);
+// Batches
+router.get('/batches', c.getBatches);
+router.post('/batches', c.createBatch);
+router.put('/batches/:id', c.updateBatch);
+router.delete('/batches/:id', c.deleteBatch);
 
-// Courses
+// Academic Sessions (Jan-Jun / Jul-Dec + year)
+router.get('/academic-sessions', c.getAcademicSessions);
+router.post('/academic-sessions', c.createAcademicSession);
+router.put('/academic-sessions/:id', c.updateAcademicSession);
+router.delete('/academic-sessions/:id', c.deleteAcademicSession);
+
+// Courses (catalog: belongs to a curriculum version, filterable by it)
 router.get('/courses', c.getCourses);
 router.post('/courses', c.createCourse);
 router.put('/courses/:id', c.updateCourse);
 router.delete('/courses/:id', c.deleteCourse);
-router.put('/courses/:id/faculty', c.assignFaculty);
+
+// Course Assignment (assign an existing course to a faculty for a session)
+router.get('/course-assignments', c.getCourseAssignments);
+router.post('/course-assignments', c.createCourseAssignment);
+router.delete('/course-assignments/:id', c.deleteCourseAssignment);
 
 // Users
 router.get('/users', c.getUsers);

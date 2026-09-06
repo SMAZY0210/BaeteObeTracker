@@ -18,7 +18,7 @@ const bulkImportStudents = async (req, res, next) => {
     if (!req.file) return res.status(400).json({ status: 'error', error: 'No file uploaded' });
 
     // The whole file is assigned to one batch, chosen in the dialog.
-    const sessionId = req.body.sessionId || null;
+    const batchId = req.body.batchId || null;
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(req.file.path);
@@ -61,11 +61,11 @@ const bulkImportStudents = async (req, res, next) => {
           where: { email: row.email },
           create: {
             email: row.email, firstName: row.firstName, lastName: row.lastName,
-            institutionalId: row.institutionalId, section: row.section, sessionId,
+            institutionalId: row.institutionalId, section: row.section, batchId,
             passwordHash,
             role: 'STUDENT', institutionId: req.user.institutionId,
           },
-          update: { firstName: row.firstName, lastName: row.lastName, institutionalId: row.institutionalId, section: row.section, sessionId },
+          update: { firstName: row.firstName, lastName: row.lastName, institutionalId: row.institutionalId, section: row.section, batchId },
         });
         results.push({ userId: user.id, email: user.email });
       }

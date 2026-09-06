@@ -9,12 +9,15 @@ const getEnrolledCourses = async (req, res, next) => {
         course: {
           include: {
             program: { select: { name: true, code: true } },
-            session: { select: { name: true, status: true } },
+            curriculumVersion: { select: { id: true, label: true } },
           },
         },
+        academicSession: { select: { id: true, term: true, year: true } },
       },
     });
-    res.json({ status: 'success', data: enrolments.map(e => e.course) });
+    // a course has no fixed term of its own any more; the term lives on the
+    // enrolment, so it rides along here rather than on course.session
+    res.json({ status: 'success', data: enrolments.map(e => ({ ...e.course, academicSession: e.academicSession })) });
   } catch (err) { next(err); }
 };
 

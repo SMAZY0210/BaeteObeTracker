@@ -4,10 +4,11 @@ const StudentView={
     try{
       const l=await Api.getEnrolledCourses();
       if(!l.length){document.getElementById('sl').innerHTML=`<div class="empty-box"><div class="empty-ico">${ico('book',24)}</div><h3>No courses enrolled</h3><p>Contact your administrator.</p></div>`;return}
+      const label=t=>t==='JAN_JUN'?'Jan - Jun':'Jul - Dec';
       document.getElementById('sl').innerHTML=`<div class="course-grid">${l.map(c=>`<div class="course-card" onclick="StudentView._openC('${c.id}','${c.name.replace(/'/g,'&#39;')}','${c.code}')">
         <div class="cc-icon">${ico('book',18)}</div>
         <div class="cc-code">${c.code}</div><div class="cc-name">${c.name}</div>
-        <div class="cc-meta"><span>${c.session?.name||''}</span></div>
+        <div class="cc-meta"><span>${c.academicSession?`${label(c.academicSession.term)} ${c.academicSession.year}`:''}</span></div>
       </div>`).join('')}</div>`;
     }catch(e){document.getElementById('sl').innerHTML=`<div class="alert alert-error"><span class="alert-icon">⚠</span>${e.message}</div>`}
   },

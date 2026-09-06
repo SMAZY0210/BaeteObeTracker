@@ -101,20 +101,20 @@ const getDepartments = async (req, res, next) => {
         _count: {
           select: {
             programs: { where: { deletedAt: null } },
-            sessions: true, // Session has no deletedAt, only status
+            batches: true, // Batch has no deletedAt, only status
           },
         },
       },
     });
 
     // Students and teachers hang off a department indirectly, so _count cannot
-    // reach them: a student is a User whose Session belongs to the department,
+    // reach them: a student is a User whose Batch belongs to the department,
     // and a teacher is a User assigned to a Course in one of its Programs.
     const withCounts = await Promise.all(
       items.map(async (d) => {
         const [students, teacherRows] = await Promise.all([
           prisma.user.count({
-            where: { role: 'STUDENT', deletedAt: null, session: { departmentId: d.id } },
+            where: { role: 'STUDENT', deletedAt: null, batch: { departmentId: d.id } },
           }),
           prisma.courseAssignment.findMany({
             where: { course: { deletedAt: null, program: { departmentId: d.id } } },
@@ -164,19 +164,19 @@ const deleteDepartment = async (req, res, next) => {
       return res.status(404).json({ status: 'error', error: 'Department not found' });
     }
 
-    const [programs, sessions, students, courses, teacherRows] = await Promise.all([
+    const [programs, batches, students, courses, teacherRows] = await Promise.all([
       prisma.program.findMany({
         where: { departmentId: id, deletedAt: null },
         select: { id: true, code: true, name: true },
       }),
-      // Session has no deletedAt; it uses status. An ARCHIVED batch still holds
+      // Batch has no deletedAt; it uses status. An ARCHIVED batch still holds
       // the attainment record for a graduated cohort, so it counts as a blocker.
-      prisma.session.findMany({
+      prisma.batch.findMany({
         where: { departmentId: id },
         select: { id: true, name: true, status: true },
       }),
       prisma.user.count({
-        where: { role: 'STUDENT', deletedAt: null, session: { departmentId: id } },
+        where: { role: 'STUDENT', deletedAt: null, batch: { departmentId: id } },
       }),
       prisma.course.count({
         where: { deletedAt: null, program: { departmentId: id } },
@@ -193,7 +193,7 @@ const deleteDepartment = async (req, res, next) => {
     if (courses)            blockers.push(`${courses} course(s)`);
     if (students)           blockers.push(`${students} student(s)`);
     if (teacherRows.length) blockers.push(`${teacherRows.length} assigned teacher(s)`);
-    if (sessions.length)    blockers.push(`${sessions.length} batch(es)`);
+    if (batches.length)     blockers.push(`${batches.length} batch(es)`);
 
     if (blockers.length) {
       return res.status(409).json({
@@ -201,7 +201,7 @@ const deleteDepartment = async (req, res, next) => {
         error: `Cannot delete "${dept.name}": ${blockers.join(', ')} still attached.`,
         blockers: {
           programs,
-          sessions,
+          batches,
           studentCount: students,
           courseCount: courses,
           teacherCount: teacherRows.length,
@@ -266,14 +266,15 @@ const deleteProgram = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-// ── Sessions ─────────────────────────────────────────────────
-const getSessions = async (req, res, next) => {
+// ── Batches ──────────────────────────────────────────────────
+const getBatches = async (req, res, next) => {
   try {
-    const items = await prisma.session.findMany({
+    const items = await prisma.batch.findMany({
       where: { institutionId: req.user.institutionId },
       orderBy: { startDate: 'desc' },
       include: {
         department: { select: { id: true, name: true, code: true } },
+        curriculumVersion: { select: { id: true, label: true, version: true } },
         _count: { select: { students: true } },
       },
     });
@@ -281,13 +282,14 @@ const getSessions = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-const createSession = async (req, res, next) => {
+const createBatch = async (req, res, next) => {
   try {
-    const { name, startDate, endDate, departmentId } = req.body;
-    const item = await prisma.session.create({
+    const { name, startDate, endDate, departmentId, curriculumVersionId } = req.body;
+    const item = await prisma.batch.create({
       data: {
         name,
         departmentId: departmentId || null,
+        curriculumVersionId: curriculumVersionId || null,
         startDate: new Date(startDate),
         endDate: endDate ? new Date(endDate) : null,
         institutionId: req.user.institutionId,
@@ -297,24 +299,29 @@ const createSession = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-const updateSession = async (req, res, next) => {
+const updateBatch = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, startDate, endDate, status, departmentId } = req.body;
-    const session = await prisma.session.findUnique({ where: { id } });
+    const { name, startDate, endDate, status, departmentId, curriculumVersionId } = req.body;
+    const batch = await prisma.batch.findUnique({ where: { id } });
 
-    let frozenThresholds = session.frozenThresholds;
+    let frozenThresholds = batch.frozenThresholds;
     // Freeze the whole threshold policy on close, not just the display bands.
-    // A reopened session has to be rescorable exactly as it was originally
+    // A reopened batch has to be rescorable exactly as it was originally
     // scored, and the l1/l2/l3 bands alone cannot do that: the attainment
     // decision runs off the co/po student and cohort thresholds.
-    if (status === 'CLOSED' && session.status !== 'CLOSED') {
-      const anyCourse = await prisma.course.findFirst({
-        where: { sessionId: id },
+    //
+    // Batch has no programId of its own (courses live at the curriculum
+    // level and a batch can in principle span more than one), so the
+    // program is read off any enrolment its students already have, same
+    // derivation getPolicyForBatch uses.
+    if (status === 'CLOSED' && batch.status !== 'CLOSED') {
+      const anyEnrolment = await prisma.enrolment.findFirst({
+        where: { student: { batchId: id } },
         select: { programId: true },
       });
-      if (anyCourse) {
-        const p = await getPolicyForProgram(anyCourse.programId);
+      if (anyEnrolment) {
+        const p = await getPolicyForProgram(anyEnrolment.programId);
         frozenThresholds = {
           version: p.version,
           coStudentThreshold: p.coStudentThreshold,
@@ -326,11 +333,12 @@ const updateSession = async (req, res, next) => {
       }
     }
 
-    const item = await prisma.session.update({
+    const item = await prisma.batch.update({
       where: { id },
       data: {
         name, status,
         ...(departmentId !== undefined && { departmentId: departmentId || null }),
+        ...(curriculumVersionId !== undefined && { curriculumVersionId: curriculumVersionId || null }),
         startDate: startDate ? new Date(startDate) : undefined,
         endDate: endDate ? new Date(endDate) : undefined,
         frozenThresholds,
@@ -340,35 +348,113 @@ const updateSession = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-const deleteSession = async (req, res, next) => {
+const deleteBatch = async (req, res, next) => {
   try {
     const { id } = req.params;
     // Guard: a batch with students attached cannot be deleted.
-    const count = await prisma.user.count({ where: { sessionId: id, deletedAt: null } });
+    const count = await prisma.user.count({ where: { batchId: id, deletedAt: null } });
     if (count > 0) {
       return res.status(409).json({ status: 'error', error: `Cannot delete: ${count} student(s) still in this batch. Move or remove them first.` });
     }
-    await prisma.session.delete({ where: { id } });
-    res.json({ status: 'success', data: { message: 'Session deleted' } });
+    await prisma.batch.delete({ where: { id } });
+    res.json({ status: 'success', data: { message: 'Batch deleted' } });
   } catch (err) { next(err); }
 };
 
-// ── Courses ──────────────────────────────────────────────────
+// ── Academic Sessions (Jan-Jun / Jul-Dec + year) ────────────────
+const getAcademicSessions = async (req, res, next) => {
+  try {
+    const items = await prisma.academicSession.findMany({
+      where: { institutionId: req.user.institutionId },
+      orderBy: [{ year: 'desc' }, { term: 'asc' }],
+      include: { _count: { select: { assignments: true, enrolments: true } } },
+    });
+    res.json({ status: 'success', data: items });
+  } catch (err) { next(err); }
+};
+
+const createAcademicSession = async (req, res, next) => {
+  try {
+    const { term, year } = req.body;
+    if (!['JAN_JUN', 'JUL_DEC'].includes(term)) {
+      return res.status(400).json({ status: 'error', error: 'term must be JAN_JUN or JUL_DEC' });
+    }
+    if (!year || isNaN(parseInt(year, 10))) {
+      return res.status(400).json({ status: 'error', error: 'A valid year is required' });
+    }
+    const item = await prisma.academicSession.create({
+      data: { term, year: parseInt(year, 10), institutionId: req.user.institutionId },
+    });
+    res.status(201).json({ status: 'success', data: item });
+  } catch (err) {
+    if (err.code === 'P2002') {
+      return res.status(409).json({ status: 'error', error: 'That term and year already exist' });
+    }
+    next(err);
+  }
+};
+
+const updateAcademicSession = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { term, year, isActive } = req.body;
+    if (term && !['JAN_JUN', 'JUL_DEC'].includes(term)) {
+      return res.status(400).json({ status: 'error', error: 'term must be JAN_JUN or JUL_DEC' });
+    }
+    const item = await prisma.academicSession.update({
+      where: { id },
+      data: {
+        ...(term && { term }),
+        ...(year !== undefined && { year: parseInt(year, 10) }),
+        ...(isActive !== undefined && { isActive }),
+      },
+    });
+    res.json({ status: 'success', data: item });
+  } catch (err) {
+    if (err.code === 'P2002') {
+      return res.status(409).json({ status: 'error', error: 'That term and year already exist' });
+    }
+    next(err);
+  }
+};
+
+const deleteAcademicSession = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const [assignments, enrolments] = await Promise.all([
+      prisma.courseAssignment.count({ where: { academicSessionId: id } }),
+      prisma.enrolment.count({ where: { academicSessionId: id } }),
+    ]);
+    if (assignments > 0 || enrolments > 0) {
+      return res.status(409).json({
+        status: 'error',
+        error: `Cannot delete: ${assignments} course assignment(s) and ${enrolments} enrolment(s) still reference this session.`,
+      });
+    }
+    await prisma.academicSession.delete({ where: { id } });
+    res.json({ status: 'success', data: { message: 'Academic session deleted' } });
+  } catch (err) { next(err); }
+};
+
+
+// ── Courses (catalog: belongs to a CurriculumVersion, reused across
+//    batches and terms via Course Assignment below) ─────────────
 const getCourses = async (req, res, next) => {
   try {
-    const { sessionId, programId } = req.query;
+    const { curriculumVersionId, programId } = req.query;
     const items = await prisma.course.findMany({
       where: {
         deletedAt: null,
-        ...(sessionId && { sessionId }),
+        ...(curriculumVersionId && { curriculumVersionId }),
         ...(programId && { programId }),
         program: { department: { institutionId: req.user.institutionId } },
       },
       include: {
         program: { select: { name: true, code: true } },
-        session: { select: { name: true } },
-        assignments: { include: { faculty: { select: { id: true, firstName: true, lastName: true, email: true } } } },
+        curriculumVersion: { select: { id: true, label: true, version: true } },
+        _count: { select: { assignments: true, enrolments: true, outcomes: true } },
       },
+      orderBy: { code: 'asc' },
     });
     res.json({ status: 'success', data: items });
   } catch (err) { next(err); }
@@ -376,19 +462,33 @@ const getCourses = async (req, res, next) => {
 
 const createCourse = async (req, res, next) => {
   try {
-    const { programId, sessionId, name, code, creditHours } = req.body;
+    const { programId, curriculumVersionId, name, code, creditHours } = req.body;
+    if (!curriculumVersionId) {
+      return res.status(400).json({ status: 'error', error: 'curriculumVersionId is required' });
+    }
     const item = await prisma.course.create({
-      data: { programId, sessionId, name, code: code.toUpperCase(), creditHours: creditHours || 3 },
+      data: { programId, curriculumVersionId, name, code: code.toUpperCase(), creditHours: creditHours || 3 },
     });
     res.status(201).json({ status: 'success', data: item });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.code === 'P2002') {
+      return res.status(409).json({ status: 'error', error: 'That course code already exists under this curriculum version' });
+    }
+    next(err);
+  }
 };
 
 const updateCourse = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { name, code, creditHours } = req.body;
-    const item = await prisma.course.update({ where: { id }, data: { name, code: code?.toUpperCase(), creditHours } });
+    const { name, code, creditHours, curriculumVersionId } = req.body;
+    const item = await prisma.course.update({
+      where: { id },
+      data: {
+        name, code: code?.toUpperCase(), creditHours,
+        ...(curriculumVersionId !== undefined && { curriculumVersionId }),
+      },
+    });
     res.json({ status: 'success', data: item });
   } catch (err) { next(err); }
 };
@@ -401,26 +501,65 @@ const deleteCourse = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-const assignFaculty = async (req, res, next) => {
+// ── Course Assignment (assign an existing catalog Course to a faculty
+//    for a chosen Academic Session) ─────────────────────────────
+const getCourseAssignments = async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const { facultyIds } = req.body; // array of user IDs
-    // Replace all assignments
-    await prisma.courseAssignment.deleteMany({ where: { courseId: id } });
-    if (facultyIds?.length) {
-      await prisma.courseAssignment.createMany({
-        data: facultyIds.map(facultyId => ({ courseId: id, facultyId })),
-        skipDuplicates: true,
-      });
-    }
-    res.json({ status: 'success', data: { message: 'Faculty assigned' } });
+    const { courseId, academicSessionId, facultyId } = req.query;
+    const items = await prisma.courseAssignment.findMany({
+      where: {
+        ...(courseId && { courseId }),
+        ...(academicSessionId && { academicSessionId }),
+        ...(facultyId && { facultyId }),
+        course: { program: { department: { institutionId: req.user.institutionId } } },
+      },
+      include: {
+        course: { select: { id: true, name: true, code: true } },
+        faculty: { select: { id: true, firstName: true, lastName: true, email: true } },
+        academicSession: { select: { id: true, term: true, year: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ status: 'success', data: items });
   } catch (err) { next(err); }
 };
+
+const createCourseAssignment = async (req, res, next) => {
+  try {
+    const { courseId, facultyId, academicSessionId } = req.body;
+    if (!courseId || !facultyId || !academicSessionId) {
+      return res.status(400).json({ status: 'error', error: 'courseId, facultyId and academicSessionId are all required' });
+    }
+    const item = await prisma.courseAssignment.create({
+      data: { courseId, facultyId, academicSessionId },
+      include: {
+        course: { select: { name: true, code: true } },
+        faculty: { select: { firstName: true, lastName: true } },
+        academicSession: { select: { term: true, year: true } },
+      },
+    });
+    res.status(201).json({ status: 'success', data: item });
+  } catch (err) {
+    if (err.code === 'P2002') {
+      return res.status(409).json({ status: 'error', error: 'That faculty member is already assigned to this course for this session' });
+    }
+    next(err);
+  }
+};
+
+const deleteCourseAssignment = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    await prisma.courseAssignment.delete({ where: { id } });
+    res.json({ status: 'success', data: { message: 'Assignment removed' } });
+  } catch (err) { next(err); }
+};
+
 
 // ── User Management ──────────────────────────────────────────
 const getUsers = async (req, res, next) => {
   try {
-    const { role, isActive, search, sessionId, batchYear, section, departmentId } = req.query;
+    const { role, isActive, search, batchId, batchYear, section, departmentId } = req.query;
 
     // Student lookup needs two filters, not one.
     //
@@ -433,12 +572,12 @@ const getUsers = async (req, res, next) => {
     // Unfiltered is still refused, because returning every student in the
     // institution is slow and useless rather than helpful.
     if (role === 'STUDENT' && !search) {
-      const filters = [departmentId, sessionId, batchYear, section].filter(Boolean).length;
+      const filters = [departmentId, batchId, batchYear, section].filter(Boolean).length;
       if (filters < 1) {
         return res.status(400).json({
           status: 'error',
           error: 'Pick a department, a batch or a section, or search by roll number or email.',
-          accepts: ['departmentId', 'sessionId', 'batchYear', 'section', 'search'],
+          accepts: ['departmentId', 'batchId', 'batchYear', 'section', 'search'],
         });
       }
     }
@@ -449,12 +588,12 @@ const getUsers = async (req, res, next) => {
         deletedAt: null,
         ...(role && { role }),
         // Department reaches students through their batch.
-        ...(departmentId && { session: { departmentId } }),
+        ...(departmentId && { batch: { departmentId } }),
         ...(isActive !== undefined && { isActive: isActive === 'true' }),
-        // Filter students by their batch (session). sessionId is the new,
-        // department-safe key. batchYear is kept only as a legacy fallback.
-        ...(sessionId
-          ? { sessionId }
+        // Filter students by their batch. batchId is the department-safe key.
+        // batchYear is kept only as a legacy fallback.
+        ...(batchId
+          ? { batchId }
           : batchYear
             ? { institutionalId: { startsWith: batchYear.toString().slice(-2) } }
             : {}),
@@ -471,8 +610,8 @@ const getUsers = async (req, res, next) => {
       select: {
         id: true, email: true, role: true, firstName: true, lastName: true,
         institutionalId: true, section: true, isActive: true, lastLoginAt: true, createdAt: true,
-        sessionId: true,
-        session: { select: { id: true, name: true, departmentId: true } },
+        batchId: true,
+        batch: { select: { id: true, name: true, departmentId: true } },
       },
       orderBy: { institutionalId: 'asc' },
     });
@@ -482,7 +621,7 @@ const getUsers = async (req, res, next) => {
 
 const createUser = async (req, res, next) => {
   try {
-    const { email, role, firstName, lastName, institutionalId, section, sessionId, password } = req.body;
+    const { email, role, firstName, lastName, institutionalId, section, batchId, password } = req.body;
     if (!email || !role || !firstName || !lastName) {
       return res.status(400).json({ status: 'error', error: 'email, role, firstName and lastName are required' });
     }
@@ -498,7 +637,7 @@ const createUser = async (req, res, next) => {
         email: email.toLowerCase(), role, firstName, lastName,
         institutionalId: institutionalId || null,
         section: section || null,
-        sessionId: sessionId || null,
+        batchId: batchId || null,
         passwordHash, institutionId: req.user.institutionId,
       },
       select: { id: true, email: true, role: true, firstName: true, lastName: true },
@@ -510,14 +649,14 @@ const createUser = async (req, res, next) => {
 const updateUser = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { firstName, lastName, email, institutionalId, section, sessionId, isActive, password } = req.body;
+    const { firstName, lastName, email, institutionalId, section, batchId, isActive, password } = req.body;
     const data = {};
     if (firstName !== undefined) data.firstName = firstName;
     if (lastName  !== undefined) data.lastName  = lastName;
     if (email     !== undefined) data.email      = email;
     if (institutionalId !== undefined) data.institutionalId = institutionalId;
     if (section   !== undefined) data.section    = section;
-    if (sessionId !== undefined) data.sessionId  = sessionId || null;
+    if (batchId   !== undefined) data.batchId    = batchId || null;
     if (isActive  !== undefined) data.isActive   = isActive;
     if (password) {
       const bcrypt = require('bcrypt');
@@ -550,7 +689,7 @@ const getCurriculumVersions = async (req, res, next) => {
     const versions = await prisma.curriculumVersion.findMany({
       where: { programId },
       include: {
-        _count: { select: { programOutcomes: { where: { deletedAt: null } }, sessions: true } },
+        _count: { select: { programOutcomes: { where: { deletedAt: null } }, batches: true, courses: { where: { deletedAt: null } } } },
       },
       orderBy: { version: 'desc' },
     });
@@ -562,7 +701,7 @@ const getCurriculumVersions = async (req, res, next) => {
       versions.map(async (v) => {
         const locked = await prisma.cohortPoAttainment.findFirst({
           where: {
-            session: { curriculumVersionId: v.id, status: { in: ['CLOSED', 'ARCHIVED'] } },
+            batch: { curriculumVersionId: v.id, status: { in: ['CLOSED', 'ARCHIVED'] } },
           },
           select: { id: true },
         });
@@ -698,19 +837,23 @@ const updateCurriculumVersion = async (req, res, next) => {
 const deleteCurriculumVersion = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const sessions = await prisma.session.findMany({
-      where: { curriculumVersionId: id },
-      select: { id: true, name: true },
-    });
-    if (sessions.length) {
+    const [batches, courses] = await Promise.all([
+      prisma.batch.findMany({ where: { curriculumVersionId: id }, select: { id: true, name: true } }),
+      prisma.course.findMany({ where: { curriculumVersionId: id, deletedAt: null }, select: { id: true, code: true, name: true } }),
+    ]);
+    const blockers = [];
+    if (batches.length) blockers.push(`${batches.length} batch(es)`);
+    if (courses.length) blockers.push(`${courses.length} course(s)`);
+    if (blockers.length) {
       return res.status(409).json({
         status: 'error',
-        error: `Cannot delete: ${sessions.length} batch(es) are assessed against this version.`,
-        blockers: { sessions },
+        error: `Cannot delete: ${blockers.join(' and ')} still attached to this version.`,
+        blockers: { batches, courses },
       });
     }
-    // Hard delete, unlike departments. A version with no batch attached has no
-    // attainment history worth preserving, and its outcomes cascade away.
+    // Hard delete, unlike departments. A version with no batch or course
+    // attached has no attainment history worth preserving, and its outcomes
+    // cascade away.
     await prisma.curriculumVersion.delete({ where: { id } });
     res.json({ status: 'success', data: { message: 'Version deleted' } });
   } catch (err) { next(err); }
@@ -719,11 +862,11 @@ const deleteCurriculumVersion = async (req, res, next) => {
 /** Is this version's outcome set locked against edits? */
 async function assertVersionEditable(curriculumVersionId) {
   const locked = await prisma.cohortPoAttainment.findFirst({
-    where: { session: { curriculumVersionId, status: { in: ['CLOSED', 'ARCHIVED'] } } },
-    select: { id: true, session: { select: { name: true } } },
+    where: { batch: { curriculumVersionId, status: { in: ['CLOSED', 'ARCHIVED'] } } },
+    select: { id: true, batch: { select: { name: true } } },
   });
   if (locked) {
-    return `This curriculum version has been used to assess a closed batch (${locked.session?.name ?? 'unknown'}). Editing its outcomes now would change what that cohort was measured against. Create a new version instead.`;
+    return `This curriculum version has been used to assess a closed batch (${locked.batch?.name ?? 'unknown'}). Editing its outcomes now would change what that cohort was measured against. Create a new version instead.`;
   }
   return null;
 }
@@ -877,7 +1020,7 @@ const getDashboard = async (req, res, next) => {
 
 const getAttainmentReport = async (req, res, next) => {
   try {
-    const { sessionId, departmentId, programId, studentId } = req.query;
+    const { batchId, departmentId, programId, studentId } = req.query;
     const institutionId = req.user.institutionId;
 
     // programId scopes the report to one programme's outcomes. Without it, PO1
@@ -894,23 +1037,37 @@ const getAttainmentReport = async (req, res, next) => {
       department: { institutionId },
     };
 
-    const courseWhere = {
-      deletedAt: null,
-      program: programFilter,
-      ...(sessionId && { sessionId }),
-    };
-
-    const courses = await prisma.course.findMany({
-      where: courseWhere,
-      include: {
-        program: { select: { code: true, name: true } },
-        session: { select: { name: true } },
-      },
-    });
-    const courseIds = courses.map(c => c.id);
+    // A course has no batch of its own any more (it is reused across many
+    // batches and terms), so "courses this batch took" means courses that
+    // batch's students actually have an enrolment in, not a direct course
+    // filter the way it worked when each batch had its own duplicate course
+    // rows.
+    let courseIds;
+    if (batchId) {
+      const enrolments = await prisma.enrolment.findMany({
+        where: { student: { batchId }, course: { program: programFilter } },
+        select: { courseId: true },
+        distinct: ['courseId'],
+      });
+      courseIds = enrolments.map(e => e.courseId);
+    } else {
+      const courses = await prisma.course.findMany({
+        where: { deletedAt: null, program: programFilter },
+        select: { id: true },
+      });
+      courseIds = courses.map(c => c.id);
+    }
     if (!courseIds.length) {
       return res.json({ status: 'success', data: { courses: [], coSummary: [], poSummary: [] } });
     }
+
+    const courses = await prisma.course.findMany({
+      where: { id: { in: courseIds } },
+      include: {
+        program: { select: { code: true, name: true } },
+        curriculumVersion: { select: { label: true } },
+      },
+    });
 
     // CoAttainment has no course relation — join via courseId lookup separately
     const courseMap = Object.fromEntries(courses.map(c => [c.id, c]));
@@ -1004,7 +1161,7 @@ const getAttainmentReport = async (req, res, next) => {
 
 const bulkCreateUsers = async (req, res, next) => {
   try {
-    const { users, sessionId } = req.body; // sessionId = the batch the whole file joins (students)
+    const { users, batchId } = req.body; // batchId = the batch the whole file joins (students)
     if (!Array.isArray(users) || !users.length) {
       return res.status(400).json({ status: 'error', error: 'No users provided' });
     }
@@ -1040,7 +1197,7 @@ const bulkCreateUsers = async (req, res, next) => {
               lastName: u.lastName.trim(),
               institutionalId: u.institutionalId?.trim() || existing.institutionalId,
               section: u.section?.trim() || existing.section,
-              ...(isStudent && sessionId ? { sessionId } : {}),
+              ...(isStudent && batchId ? { batchId } : {}),
             },
           });
           results.updated = (results.updated || 0) + 1;
@@ -1057,7 +1214,7 @@ const bulkCreateUsers = async (req, res, next) => {
             lastName: u.lastName.trim(),
             institutionalId: u.institutionalId?.trim() || null,
             section: u.section?.trim() || null,
-            sessionId: isStudent ? (sessionId || null) : null,
+            batchId: isStudent ? (batchId || null) : null,
           },
         });
         results.created++;
@@ -1076,7 +1233,7 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
 
     const student = await prisma.user.findUnique({
       where: { id: studentId },
-      select: { id: true, firstName: true, lastName: true, institutionalId: true, email: true, section: true },
+      select: { id: true, firstName: true, lastName: true, institutionalId: true, email: true, section: true, batch: { select: { name: true } } },
     });
     if (!student) return res.status(404).json({ status: 'error', error: 'Student not found' });
 
@@ -1118,11 +1275,11 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
     // instead of hiding it.
     const studentRec = await prisma.user.findUnique({
       where: { id: studentId },
-      select: { session: { select: { curriculumVersionId: true } } },
+      select: { batch: { select: { curriculumVersionId: true } } },
     });
 
     let allPos = [];
-    const cvId = studentRec?.session?.curriculumVersionId;
+    const cvId = studentRec?.batch?.curriculumVersionId;
     if (cvId) {
       allPos = await prisma.programOutcome.findMany({
         where: { curriculumVersionId: cvId, deletedAt: null },
@@ -1291,10 +1448,11 @@ const getStudentAttainmentAdmin = async (req, res, next) => {
 // ── Enrolments ───────────────────────────────────────────────
 const getEnrolments = async (req, res, next) => {
   try {
-    const { courseId } = req.query;
+    const { courseId, academicSessionId } = req.query;
     if (!courseId) return res.status(400).json({ status: 'error', error: 'courseId required' });
     const enrolments = await prisma.enrolment.findMany({
-      where: { courseId },
+      where: { courseId, ...(academicSessionId && { academicSessionId }) },
+      include: { academicSession: { select: { id: true, term: true, year: true } } },
       orderBy: { createdAt: 'asc' },
     });
     // Fetch student details separately since Enrolment has no student relation
@@ -1311,8 +1469,13 @@ const getEnrolments = async (req, res, next) => {
 
 const enrolStudents = async (req, res, next) => {
   try {
-    const { courseId, studentIds, sessionId, batchYear, section } = req.body;
+    const { courseId, studentIds, batchId, batchYear, section, academicSessionId } = req.body;
     if (!courseId) return res.status(400).json({ status: 'error', error: 'courseId required' });
+    // Which term this enrolment is for. Course is shared across many terms
+    // now, so this can no longer be inferred from the course itself.
+    if (!academicSessionId) {
+      return res.status(400).json({ status: 'error', error: 'academicSessionId is required' });
+    }
 
     // Get course to find programId
     const course = await prisma.course.findUnique({
@@ -1331,12 +1494,12 @@ const enrolStudents = async (req, res, next) => {
     } else {
       // Batch enrolment.
       //
-      // The batch scope is mandatory. Previously, if sessionId arrived empty the
+      // The batch scope is mandatory. Previously, if batchId arrived empty the
       // query fell through to { role: STUDENT, isActive: true } plus an optional
       // section, which matches every student in the institution. Choosing "Batch
       // 2026, all sections" then enrolled section A of every other batch as
       // well, because nothing in the query mentioned 2026 at all.
-      if (!sessionId && !batchYear) {
+      if (!batchId && !batchYear) {
         return res.status(400).json({
           status: 'error',
           error: 'Pick a batch. Enrolling without one would match every student in the institution.',
@@ -1344,24 +1507,24 @@ const enrolStudents = async (req, res, next) => {
       }
 
       const where = { role: 'STUDENT', deletedAt: null, isActive: true };
-      if (sessionId) {
-        where.sessionId = sessionId;
+      if (batchId) {
+        where.batchId = batchId;
       } else {
         // batchYear is a fallback for callers that only know the year. Match the
-        // session by name rather than by slicing digits off the roll number,
+        // batch by name rather than by slicing digits off the roll number,
         // which assumed a roll format that does not hold: a 2026 batch was
         // matched with startsWith "26" against roll numbers beginning "23".
-        const sessions = await prisma.session.findMany({
+        const batches = await prisma.batch.findMany({
           where: {
             institutionId: req.user.institutionId,
             name: { contains: String(batchYear), mode: 'insensitive' },
           },
           select: { id: true },
         });
-        if (!sessions.length) {
+        if (!batches.length) {
           return res.status(400).json({ status: 'error', error: `No batch matching "${batchYear}" found.` });
         }
-        where.sessionId = { in: sessions.map((x) => x.id) };
+        where.batchId = { in: batches.map((x) => x.id) };
       }
       if (section) where.section = section;
 
@@ -1370,14 +1533,14 @@ const enrolStudents = async (req, res, next) => {
 
     if (!students.length) return res.status(400).json({ status: 'error', error: 'No students found for the given criteria' });
 
-    // Upsert enrolments (skip already enrolled)
+    // Upsert enrolments (skip already enrolled for this course + term)
     let enrolled = 0, skipped = 0;
     for (const stu of students) {
       const existing = await prisma.enrolment.findUnique({
-        where: { studentId_courseId: { studentId: stu.id, courseId } },
+        where: { studentId_courseId_academicSessionId: { studentId: stu.id, courseId, academicSessionId } },
       });
       if (existing) { skipped++; continue; }
-      await prisma.enrolment.create({ data: { studentId: stu.id, courseId, programId: course.programId } });
+      await prisma.enrolment.create({ data: { studentId: stu.id, courseId, academicSessionId, programId: course.programId } });
       enrolled++;
     }
     res.json({ status: 'success', data: { enrolled, skipped, total: students.length } });
@@ -1396,8 +1559,10 @@ module.exports = {
   getFaculties, createFaculty, updateFaculty, deleteFaculty,
   getDepartments, createDepartment, updateDepartment, deleteDepartment,
   getPrograms, createProgram, updateProgram, deleteProgram,
-  getSessions, createSession, updateSession, deleteSession,
-  getCourses, createCourse, updateCourse, deleteCourse, assignFaculty,
+  getBatches, createBatch, updateBatch, deleteBatch,
+  getAcademicSessions, createAcademicSession, updateAcademicSession, deleteAcademicSession,
+  getCourses, createCourse, updateCourse, deleteCourse,
+  getCourseAssignments, createCourseAssignment, deleteCourseAssignment,
   getUsers, createUser, updateUser, bulkCreateUsers,
   getEnrolments, enrolStudents, removeEnrolment,
   getAttainmentReport,

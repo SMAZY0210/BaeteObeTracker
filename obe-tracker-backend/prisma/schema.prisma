@@ -55,11 +55,16 @@ enum CorrelationValue {
   STRONG
 }
 
-enum SessionStatus {
+enum BatchStatus {
   DRAFT
   ACTIVE
   CLOSED
   ARCHIVED
+}
+
+enum AcademicTerm {
+  JAN_JUN
+  JUL_DEC
 }
 
 enum ComplexAttrKind {
@@ -240,7 +245,8 @@ model Institution {
   users       User[]
   faculties   Faculty[]
   departments Department[]
-  sessions    Session[]
+  batches          Batch[]
+  academicSessions AcademicSession[]
 }
 
 model User {
@@ -253,7 +259,7 @@ model User {
   lastName        String
   institutionalId String?
   section         String?
-  sessionId       String?
+  batchId         String?
   isActive        Boolean   @default(true)
   mustChangePassword Boolean @default(true) // [NEW] see MIGRATION.md, roll-number passwords
   lastLoginAt     DateTime?
@@ -263,7 +269,7 @@ model User {
   deletedAt       DateTime?
 
   institution        Institution        @relation(fields: [institutionId], references: [id])
-  session            Session?           @relation(fields: [sessionId], references: [id])
+  batch              Batch?             @relation(fields: [batchId], references: [id])
   otpTokens          OtpToken[]
   jwtBlacklist       JwtBlacklist[]
   auditLogs          AuditLog[]
@@ -343,7 +349,7 @@ model Department {
   institution Institution @relation(fields: [institutionId], references: [id])
   faculty     Faculty?    @relation(fields: [facultyId], references: [id])
   programs    Program[]
-  sessions    Session[]
+  batches     Batch[]
 
   @@unique([institutionId, code])
 }
@@ -371,7 +377,8 @@ model CurriculumVersion {
 
   program         Program          @relation(fields: [programId], references: [id])
   programOutcomes ProgramOutcome[]
-  sessions        Session[]
+  batches         Batch[]
+  courses         Course[]
 
   @@unique([programId, version])
   @@index([programId, isCurrent])
@@ -408,16 +415,16 @@ model Program {
   @@unique([departmentId, code])
 }
 
-model Session {
+model Batch {
   id                String        @id @default(cuid())
   institutionId     String
   departmentId      String?
   name              String
   startDate         DateTime
   endDate           DateTime?
-  expectedGraduation DateTime?    // [NEW] drives the by-graduation PO rollup
-  curriculumVersionId String?     // [NEW] which outcome set this batch is assessed against
-  status            SessionStatus @default(DRAFT)
+  expectedGraduation DateTime?    // drives the by-graduation PO rollup
+  curriculumVersionId String?     // which outcome set this batch is assessed against
+  status            BatchStatus   @default(DRAFT)
   frozenThresholds  Json?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
@@ -426,11 +433,32 @@ model Session {
   department        Department?          @relation(fields: [departmentId], references: [id])
   curriculumVersion CurriculumVersion?   @relation(fields: [curriculumVersionId], references: [id])
   students          User[]
-  courses           Course[]
   cohortAttainments CohortPoAttainment[]
 
   @@index([institutionId])
   @@index([departmentId])
+}
+
+// Academic term: one half of a year, e.g. "Jul - Dec 2026". A course is
+// assigned to a faculty for one of these.
+model AcademicSession {
+  id            String       @id @default(cuid())
+  institutionId String
+  term          AcademicTerm
+  year          Int
+  isActive      Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  institution Institution        @relation(fields: [institutionId], references: [id])
+  assignments CourseAssignment[]
+  enrolments  Enrolment[]
+  assessments Assessment[]
+  courseCoAttainments CourseCoAttainment[]
+  reports     Report[]
+
+  @@unique([institutionId, term, year])
+  @@index([institutionId])
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -543,7 +571,7 @@ model SurveyAnswer {
 model Course {
   id          String    @id @default(cuid())
   programId   String
-  sessionId   String
+  curriculumVersionId String
   name        String
   code        String
   creditHours Int       @default(3)
@@ -555,7 +583,7 @@ model Course {
   deletedAt   DateTime?
 
   program           Program              @relation(fields: [programId], references: [id])
-  session           Session              @relation(fields: [sessionId], references: [id])
+  curriculumVersion CurriculumVersion    @relation(fields: [curriculumVersionId], references: [id])
   assignments       CourseAssignment[]
   enrolments        Enrolment[]
   outcomes          CourseOutcome[]
@@ -567,20 +595,24 @@ model Course {
   evidence          Evidence[]
   coAttainments     CourseCoAttainment[]
 
-  @@unique([sessionId, code])
+  @@unique([curriculumVersionId, code])
   @@index([programId])
+  @@index([curriculumVersionId])
 }
 
 model CourseAssignment {
-  id        String   @id @default(cuid())
-  courseId  String
-  facultyId String
-  createdAt DateTime @default(now())
+  id                String   @id @default(cuid())
+  courseId          String
+  facultyId         String
+  academicSessionId String
+  createdAt         DateTime @default(now())
 
-  course  Course @relation(fields: [courseId], references: [id])
-  faculty User   @relation(fields: [facultyId], references: [id])
+  course          Course          @relation(fields: [courseId], references: [id])
+  faculty         User            @relation(fields: [facultyId], references: [id])
+  academicSession AcademicSession @relation(fields: [academicSessionId], references: [id])
 
-  @@unique([courseId, facultyId])
+  @@unique([courseId, facultyId, academicSessionId])
+  @@index([academicSessionId])
 }
 
 // [NEW] s.5.6.3 — every student must be assigned an advisor
@@ -599,18 +631,21 @@ model StudentAdvisor {
 }
 
 model Enrolment {
-  id        String   @id @default(cuid())
-  studentId String
-  courseId  String
-  programId String
-  createdAt DateTime @default(now())
+  id                String   @id @default(cuid())
+  studentId         String
+  courseId          String
+  academicSessionId String // [NEW] course + session is the cohort key, a course row is reused across terms
+  programId         String
+  createdAt         DateTime @default(now())
 
-  student User    @relation(fields: [studentId], references: [id]) // [CHANGED] now a real FK
-  course  Course  @relation(fields: [courseId], references: [id])
-  program Program @relation(fields: [programId], references: [id])
+  student         User            @relation(fields: [studentId], references: [id])
+  course          Course          @relation(fields: [courseId], references: [id])
+  academicSession AcademicSession @relation(fields: [academicSessionId], references: [id])
+  program         Program         @relation(fields: [programId], references: [id])
 
-  @@unique([studentId, courseId])
+  @@unique([studentId, courseId, academicSessionId])
   @@index([studentId])
+  @@index([courseId, academicSessionId])
 }
 
 model ProgramOutcome {
@@ -746,6 +781,7 @@ model CoPoMapping {
 model Assessment {
   id             String         @id @default(cuid())
   courseId       String
+  academicSessionId String      // [NEW] which term this was actually conducted in
   type           AssessmentType
   method         AssessMethod   @default(DIRECT) // [NEW] s.5.2.5
   title          String
@@ -759,13 +795,14 @@ model Assessment {
   deletedAt      DateTime?
 
   course            Course                  @relation(fields: [courseId], references: [id])
+  academicSession   AcademicSession         @relation(fields: [academicSessionId], references: [id])
   assessmentCOs     AssessmentCO[]
   marks             Mark[]
   complexAttributes AssessmentComplexAttr[] // [NEW] s.5.3.6 WP/EA at the assessment level
   sdgs              AssessmentSdg[]
   evidence          Evidence[]
 
-  @@index([courseId])
+  @@index([courseId, academicSessionId])
 }
 
 model AssessmentComplexAttr {
@@ -910,21 +947,23 @@ model CoAttainment {
 // [NEW] tier 2 — did the course offering deliver the CO at all?
 // This is the number CQI runs on. The original schema could not express it.
 model CourseCoAttainment {
-  id              String   @id @default(cuid())
-  courseId        String
-  courseOutcomeId String
-  enrolledCount   Int
-  assessedCount   Int
-  attainedCount   Int
-  attainmentPct   Float // attainedCount / assessedCount * 100
-  attained        Boolean
-  policyVersion   Int
-  computedAt      DateTime @default(now())
+  id                String   @id @default(cuid())
+  courseId          String
+  academicSessionId String // [NEW] one row per course per term, not per course forever
+  courseOutcomeId   String
+  enrolledCount     Int
+  assessedCount     Int
+  attainedCount     Int
+  attainmentPct     Float // attainedCount / assessedCount * 100
+  attained          Boolean
+  policyVersion     Int
+  computedAt        DateTime @default(now())
 
-  course        Course        @relation(fields: [courseId], references: [id])
-  courseOutcome CourseOutcome @relation(fields: [courseOutcomeId], references: [id])
+  course          Course          @relation(fields: [courseId], references: [id])
+  academicSession AcademicSession @relation(fields: [academicSessionId], references: [id])
+  courseOutcome   CourseOutcome   @relation(fields: [courseOutcomeId], references: [id])
 
-  @@unique([courseId, courseOutcomeId])
+  @@unique([courseId, academicSessionId, courseOutcomeId], map: "CourseCoAttainment_course_session_outcome_key")
 }
 
 model PoAttainment {
@@ -951,7 +990,7 @@ model PoAttainment {
 model CohortPoAttainment {
   id               String   @id @default(cuid())
   programId        String
-  sessionId        String // the batch
+  batchId          String // the batch (cohort)
   programOutcomeId String
   cohortSize       Int
   assessedCount    Int
@@ -963,10 +1002,10 @@ model CohortPoAttainment {
   computedAt       DateTime @default(now())
 
   program        Program        @relation(fields: [programId], references: [id])
-  session        Session        @relation(fields: [sessionId], references: [id])
+  batch          Batch          @relation(fields: [batchId], references: [id])
   programOutcome ProgramOutcome @relation(fields: [programOutcomeId], references: [id])
 
-  @@unique([sessionId, programOutcomeId])
+  @@unique([batchId, programOutcomeId])
   @@index([programId])
 }
 
@@ -1035,17 +1074,19 @@ model CqiAction {
 // ══════════════════════════════════════════════════════════════════════
 
 model Report {
-  id            String   @id @default(cuid())
-  courseId      String?
-  generatedById String
-  reportType    String // "SAR_ANNEX_CO_PO", "SAR_ANNEX_WK_MAP", "CQI_REGISTER", ...
-  format        String
-  filePath      String
-  expiresAt     DateTime
-  createdAt     DateTime @default(now())
+  id                String   @id @default(cuid())
+  courseId          String?
+  academicSessionId String? // [NEW] which term this report was run for, when course-scoped
+  generatedById     String
+  reportType        String // "SAR_ANNEX_CO_PO", "SAR_ANNEX_WK_MAP", "CQI_REGISTER", ...
+  format            String
+  filePath          String
+  expiresAt         DateTime
+  createdAt         DateTime @default(now())
 
-  course      Course? @relation(fields: [courseId], references: [id])
-  generatedBy User    @relation(fields: [generatedById], references: [id])
+  course          Course?          @relation(fields: [courseId], references: [id])
+  academicSession AcademicSession? @relation(fields: [academicSessionId], references: [id])
+  generatedBy     User             @relation(fields: [generatedById], references: [id])
 }
 
 model AuditLog {
